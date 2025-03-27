@@ -30,6 +30,6 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add actors_data.json
           git commit -m "Automated update of actor data [skip ci]" || echo "No changes to commit"
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/RileyBerycz/ActorToActor.git
+          git remote set-url origin https://x-access-token:${{ secrets.MY_PAT }}@github.com/RileyBerycz/ActorToActor.git
           git push
       
