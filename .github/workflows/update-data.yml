@@ -2,14 +2,18 @@ name: Update TMDB Actor Data
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # runs daily at midnight UTC
+    - cron: '0 0 * * *'  # Runs daily at midnight UTC
   workflow_dispatch:
+
+permissions:
+  contents: write  # Grants write permission to the contents scope
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,11 +29,11 @@ jobs:
         run: python update_actor_data.py
 
       - name: Commit and Push Updated JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add actors_data.json
-          git commit -m "Automated update of actor data [skip ci]" || echo "No changes to commit"
-          git remote set-url origin https://x-access-token:${{ secrets.MY_PAT }}@github.com/RileyBerycz/ActorToActor.git
+          git diff --staged --quiet || git commit -m "Automated update of actor data [skip ci]"
           git push
-      
