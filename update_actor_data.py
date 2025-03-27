@@ -66,9 +66,13 @@ for page in range(1, TOTAL_PAGES + 1):
             details_data = details_response.json()
             place_of_birth = details_data.get("place_of_birth", "Unknown")
             
+            # Fix: Handle None values for place_of_birth
+            if place_of_birth is None:
+                place_of_birth = "Unknown"
+            
             # Determine regions based on place of birth
             for region_code, region_name in REGIONS.items():
-                if region_name in place_of_birth:
+                if place_of_birth != "Unknown" and region_name in place_of_birth:
                     known_regions.append(region_code)
             
             # If no specific region matched, mark as OTHER
