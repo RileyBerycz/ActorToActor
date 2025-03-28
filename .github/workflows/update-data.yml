@@ -1,39 +1,41 @@
-name: Update TMDB Actor Data
+name: Update Actor Data
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Runs daily at midnight UTC
-  workflow_dispatch:
-
-permissions:
-  contents: write  # Grants write permission to the contents scope
+    - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          lfs: true  # Enable LFS support
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
-      - name: Install Dependencies
-        run: pip install requests
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-      - name: Run Data Update Script
+      - name: Configure Git LFS
+        run: |
+          git lfs install
+
+      - name: Update actor data
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: python update_actor_data.py
 
-      - name: Commit and Push Updated JSON
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit and push if changed
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add actors_data.json
-          git diff --staged --quiet || git commit -m "Automated update of actor data [skip ci]"
-          git push
+          git add -A
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated update of actor data [skip ci]" && git push)
