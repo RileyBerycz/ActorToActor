@@ -90,35 +90,92 @@ for page in range(1, TOTAL_PAGES + 1):
         credits_params = {"api_key": TMDB_API_KEY}
         credits_response = requests.get(credits_url, params=credits_params)
         
-        movie_credits = []
+        # When processing movie credits, check for Marvel Studios
         if credits_response.status_code == 200:
             credits_data = credits_response.json()
-            movie_credits = credits_data.get("cast", [])
+            
+            # Initialize Marvel flag
+            is_mcu_actor = False
+            
+            # Process movie credits and check for Marvel involvement
+            movie_credits = []
+            for credit in credits_data.get("cast", []):
+                # Only keep essential credit info to reduce file size
+                compact_credit = {
+                    "id": credit["id"],
+                    "title": credit.get("title", ""),
+                    "character": credit.get("character", ""),
+                    "popularity": credit.get("popularity", 0),
+                    "release_date": credit.get("release_date", "")
+                }
+                
+                # Only add movies above a certain popularity threshold
+                if credit.get("popularity", 0) > 1.5:
+                    movie_credits.append(compact_credit)
+                    
+                    # If we haven't identified them as MCU yet, check this movie
+                    if not is_mcu_actor:
+                        # Get movie details to check production companies
+                        movie_id = credit["id"]
+                        movie_url = f"{BASE_URL}/movie/{movie_id}"
+                        movie_params = {"api_key": TMDB_API_KEY}
+                        movie_response = requests.get(movie_url, params=movie_params)
+                        
+                        if movie_response.status_code == 200:
+                            movie_data = movie_response.json()
+                            production_companies = movie_data.get("production_companies", [])
+                            
+                            # Check if Marvel Studios is in production companies
+                            for company in production_companies:
+                                if "Marvel Studios" in company.get("name", ""):
+                                    is_mcu_actor = True
+                                    break
+                            
+                        # Limit API calls by adding a small delay
+                        time.sleep(0.2)
         else:
             print(f"Error fetching movie credits for {actor_name}: {credits_response.text}")
+            is_mcu_actor = False
         
         # Step 3: Get TV credits
         tv_credits_url = ACTOR_TV_CREDITS_URL_TEMPLATE.format(actor_id)
         tv_credits_params = {"api_key": TMDB_API_KEY}
         tv_credits_response = requests.get(tv_credits_url, params=tv_credits_params)
         
+        # Process TV credits similar to how we process movie credits
         tv_credits = []
         if tv_credits_response.status_code == 200:
             tv_credits_data = tv_credits_response.json()
-            tv_credits = tv_credits_data.get("cast", [])
+            
+            # Only keep essential fields from TV credits and filter by popularity
+            for credit in tv_credits_data.get("cast", []):
+                if credit.get("popularity", 0) > 1.5:  # Same threshold as movies
+                    compact_tv_credit = {
+                        "id": credit["id"],
+                        "name": credit.get("name", ""),
+                        "character": credit.get("character", ""),
+                        "popularity": credit.get("popularity", 0),
+                        "first_air_date": credit.get("first_air_date", "")
+                    }
+                    tv_credits.append(compact_tv_credit)
         else:
             print(f"Error fetching TV credits for {actor_name}: {tv_credits_response.text}")
-            
-        # Store the actor's data with all the new information
+
+        # Store only what we need in the actor's data
         actors_data[actor_id] = {
             "name": actor_name,
             "popularity": popularity,
             "place_of_birth": place_of_birth,
             "regions": known_regions,
-            "movie_credits": movie_credits,
-            "tv_credits": tv_credits
+            "is_mcu": is_mcu_actor
         }
-        
+
+        # Only include credits if they exist
+        if movie_credits:
+            actors_data[actor_id]["movie_credits"] = movie_credits
+        if tv_credits:
+            actors_data[actor_id]["tv_credits"] = tv_credits
+
         # Brief delay to avoid hitting rate limits
         time.sleep(0.5)  # Increased delay due to multiple API calls per actor
     
@@ -126,9 +183,26 @@ for page in range(1, TOTAL_PAGES + 1):
     time.sleep(1)
     print(f"Completed page {page}/{TOTAL_PAGES}")
 
-# Write the fetched data to a JSON file
-output_file = "actors_data.json"
-with open(output_file, "w", encoding="utf-8") as f:
-    json.dump(actors_data, f, indent=2, ensure_ascii=False)
+# Split data by region for smaller files
+actors_by_region = {region: {} for region in list(REGIONS.keys())}
+actors_by_region["GLOBAL"] = {}  # Add global category
 
-print(f"Data successfully updated and written to {output_file}")
+for actor_id, actor_data in actors_data.items():
+    # Assign to each region the actor belongs to
+    for region in actor_data["regions"]:
+        actors_by_region[region][actor_id] = actor_data
+
+# Save separate files for each region
+for region, actors in actors_by_region.items():
+    if actors:  # Skip empty regions
+        output_file = f"actors_data_{region}.json"
+        with open(output_file, "w", encoding="utf-8") as f:
+            # No indentation for smaller file size
+            json.dump(actors, f, ensure_ascii=False)
+        print(f"Data for region {region} written to {output_file}")
+
+# Write the complete data file without indentation to reduce size
+with open("actors_data.json", "w", encoding="utf-8") as f:
+    json.dump(actors_data, f, ensure_ascii=False)  # No indent
+
+print(f"Data successfully updated and written to multiple files")
