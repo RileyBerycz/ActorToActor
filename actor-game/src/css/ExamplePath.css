@@ -1,0 +1,280 @@
+/************************************************************
+ * Container and Layout
+ ************************************************************/
+.snake-path {
+  position: relative;
+  background-color: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 40px 30px 50px; /* Increased padding for better spacing */
+  margin: 0 auto;
+  display: inline-block; /* Key change: Allow container to size to content */
+  min-width: 700px; /* Minimum width for larger paths */
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: visible; /* Allow connectors and arrows to extend beyond the box */
+}
+
+/************************************************************
+ * Rows
+ ************************************************************/
+.path-row {
+  display: flex;
+  position: relative;
+  margin-bottom: 70px; /* Space for arrows between rows */
+  width: 100%;
+  justify-content: flex-start; /* Ensure consistent alignment */
+  flex-wrap: nowrap; /* Prevent wrapping */
+}
+
+/* Remove bottom spacing on the last row */
+.path-row:last-child {
+  margin-bottom: 20px;
+}
+
+/* Odd rows: left → right (normal) */
+.path-row.odd {
+  flex-direction: row;
+}
+
+/* Even rows: right → left */
+.path-row.even {
+  flex-direction: row-reverse;
+  justify-content: flex-end; /* This is the key change */
+}
+
+/************************************************************
+ * Nodes
+ ************************************************************/
+.path-node {
+  width: 100px;
+  flex: 0 0 100px; /* Fixed width, don't grow or shrink */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  transition: transform 0.2s;
+  z-index: 2;
+  margin: 0; /* Remove any margin */
+}
+
+.path-node:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* Transparent nodes MUST take up proper space */
+.path-node.transparent {
+  opacity: 0;
+  pointer-events: none;
+  width: 100px; /* Same as normal nodes */
+  height: 170px; /* Match height of nodes with images */
+  margin: 0;
+  padding: 8px;
+  display: block; /* Ensure it takes up space */
+  visibility: visible; /* Ensures layout is affected */
+  order: 9999; /* Always ensure placeholders come after real nodes */
+}
+
+/* For debugging placeholders */
+.path-node.debug-placeholder {
+  opacity: 0.4;
+  background-color: rgba(200, 200, 200, 0.2);
+  border: 1px dashed #aaa;
+  order: 9999; /* Always ensure placeholders come after real nodes */
+}
+
+/* Node images */
+.path-node img {
+  width: 80px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Actor vs. Movie borders */
+.actor-image {
+  border: 2px solid #3f51b5;
+}
+
+.movie-image {
+  border: 2px solid #f44336;
+}
+
+/* Special Start / Target node styling */
+.start {
+  border: 3px solid #4CAF50 !important;
+}
+
+.target {
+  border: 3px solid #FF9800 !important;
+}
+
+/* Node label text */
+.node-label {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  max-width: 90px;
+  height: 36px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Start / Target tags */
+.node-tag {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: bold;
+  color: white;
+  border-radius: 4px;
+  z-index: 3;
+}
+
+.node-tag.start {
+  background-color: #4CAF50;
+}
+
+.node-tag.target {
+  background-color: #FF9800;
+}
+
+/************************************************************
+ * Horizontal Connectors (Arrows between nodes in a row)
+ ************************************************************/
+.connector.horizontal {
+  width: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Add circular background to horizontal arrows */
+.connector.horizontal svg {
+  width: 24px;
+  height: 24px;
+  position: relative;
+  z-index: 2;
+  background-color: white;
+  border-radius: 50%;
+  padding: 3px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Flip arrow direction on even rows */
+.path-row.even .connector.horizontal svg {
+  transform: rotate(180deg);
+}
+
+/* Make transparent connectors truly transparent */
+.connector.horizontal.transparent {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/************************************************************
+ * Vertical Connector + Down Arrow
+ ************************************************************/
+/* Remove vertical connectors - we only want arrows */
+.path-row .vertical-connector {
+  display: none !important; /* Remove vertical lines completely */
+}
+
+/* Match down arrow style with horizontal arrows */
+.down-arrow {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  z-index: 2;
+  background-color: transparent; /* Changed to transparent */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  bottom: -45px;
+}
+
+/* Add circular background to down arrow */
+.down-arrow svg {
+  transform: rotate(90deg);
+  width: 24px;
+  height: 24px;
+  background-color: white;
+  border-radius: 50%;
+  padding: 3px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Position down arrow for odd rows */
+.path-row.odd .down-arrow {
+  right: 50px; 
+}
+
+/* Position down arrow for even rows */
+.path-row.even .down-arrow {
+  left: 50px;
+}
+
+/************************************************************
+ * Explanation section styling
+ ************************************************************/
+.example-explanation {
+  margin-top: 25px;
+  background-color: #f5f5f5;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+.example-explanation ol {
+  margin-left: 20px;
+}
+
+.example-explanation li {
+  margin-bottom: 5px;
+}
+
+/************************************************************
+ * Responsive Tweaks
+ ************************************************************/
+@media (max-width: 700px) {
+  .snake-path {
+    width: 100%;
+    padding: 20px;
+  }
+
+  .path-node {
+    width: 80px;
+  }
+
+  .connector.horizontal {
+    width: 20px;
+  }
+
+  .path-row.odd .vertical-connector {
+    right: 40px;
+  }
+
+  .path-row.even .vertical-connector {
+    left: 40px;
+  }
+
+  .path-row.odd .down-arrow {
+    right: 28px;
+  }
+
+  .path-row.even .down-arrow {
+    left: 28px;
+  }
+}

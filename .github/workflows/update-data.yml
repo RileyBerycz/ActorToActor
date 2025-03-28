@@ -5,17 +5,20 @@ on:
     - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight
   workflow_dispatch:  # Allow manual triggering
 
+permissions:
+  contents: write  # Grant write access for pushing changes
+
 jobs:
   update-data:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           lfs: true  # Enable LFS support
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
@@ -25,8 +28,7 @@ jobs:
           pip install requests
 
       - name: Configure Git LFS
-        run: |
-          git lfs install
+        run: git lfs install
 
       - name: Update actor data
         env:
@@ -34,8 +36,17 @@ jobs:
         run: python update_actor_data.py
 
       - name: Commit and push if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated update of actor data [skip ci]" && git push)
+          if ! git diff --quiet || ! git diff --staged --quiet; then
+            git commit -m "Automated update of actor data [skip ci]"
+            # Set the remote URL to authenticate using the GITHUB_TOKEN
+            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/RileyBerycz/ActorToActor.git
+            git push
+          else
+            echo "No changes to commit"
+          fi

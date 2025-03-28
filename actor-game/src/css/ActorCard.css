@@ -1,0 +1,82 @@
+.actor-card {
+  display: flex;
+  flex-direction: column;
+  background-color: #f8f8f8;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  width: 160px;
+  transition: transform 0.2s ease;
+}
+
+.actor-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.actor-image {
+  height: 180px;
+  background-color: #eee;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.actor-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.placeholder-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background-color: #ddd;
+  color: #888;
+  font-size: 48px;
+  font-weight: bold;
+}
+
+.actor-info {
+  padding: 12px;
+}
+
+.actor-info h3 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.role-badge, .mcu-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.role-badge {
+  background-color: #e0e0e0;
+  color: #333;
+}
+
+.mcu-badge {
+  background-color: #f44336;
+  color: white;
+}
+
+.actor-card.start {
+  border: 2px solid #4CAF50;
+}
+
+.actor-card.target {
+  border: 2px solid #2196F3;
+}
+
+.actor-card.current {
+  border: 2px solid #FF9800;
+}
