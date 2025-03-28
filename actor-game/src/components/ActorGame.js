@@ -15,6 +15,7 @@ function ActorGame({ settings }) {
   const [targetActor, setTargetActor] = useState(null);
   const [currentPath, setCurrentPath] = useState([]);
   const [moves, setMoves] = useState(0);
+  // eslint-disable-next-line no-unused-vars
   const [maxMoves, setMaxMoves] = useState(6); // Limit moves based on difficulty
   
   // Player input state
@@ -23,38 +24,48 @@ function ActorGame({ settings }) {
   const [guessError, setGuessError] = useState(null);
   
   // TMDB API constants
+  // eslint-disable-next-line no-unused-vars
   const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
+  // eslint-disable-next-line no-unused-vars
   const PROFILE_SIZE = "w185";
+  // eslint-disable-next-line no-unused-vars
   const POSTER_SIZE = "w342";
 
   // Fetch actor data on component mount
   useEffect(() => {
     setLoading(true);
-    
-    const isDev = process.env.NODE_ENV === 'development';
-    const dataUrl = isDev 
-      ? `/actors_data_${settings.region}.json` // Local development path
-      : `https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actors_data_${settings.region}.json`;
-    
+
+    const dataUrl = "/actors_data_GLOBAL.json"; // Hardcoded path
+
     console.log(`Attempting to load data from: ${dataUrl}`);
-    
+
     fetch(dataUrl)
-      .then(response => {
+      .then((response) => {
         if (!response.ok) {
-          throw new Error(`Failed to load actor data: ${response.status} ${response.statusText}`);
+          throw new Error(
+            `Failed to load actor data: ${response.status} ${response.statusText}`
+          );
         }
-        return response.json();
+        return response.text(); // Get raw text instead of parsing JSON
       })
-      .then(data => {
-        console.log(`Successfully loaded data with ${Object.keys(data).length} actors`);
-        setActorData(data);
+      .then((rawText) => {
+        console.log("Raw response:", rawText.substring(0, 500) + "..."); // Log the first 500 chars
+        try {
+          const data = JSON.parse(rawText); // Try to parse manually
+          console.log(`Successfully loaded data with ${Object.keys(data).length} actors`);
+          setActorData(data);
+        } catch (error) {
+          console.error("Error parsing JSON manually:", error);
+          console.error("First 500 chars of response:", rawText.substring(0, 500));
+          throw new Error("Failed to parse JSON data");
+        }
         setLoading(false);
       })
-      .catch(error => {
-        console.error('Error fetching actor data:', error);
+      .catch((error) => {
+        console.error("Error fetching actor data:", error);
         setLoading(false);
       });
-  }, [settings.region]);
+  }, []); // Removed settings.region dependency
   
   // Start a new game
   const startNewGame = () => {

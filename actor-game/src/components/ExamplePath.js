@@ -188,7 +188,7 @@ function ExamplePath() {
           <li>Murray was in <strong>The Grand Budapest Hotel</strong> with <strong>Ralph Fiennes</strong></li>
           <li>Fiennes was in <strong>Harry Potter and the Goblet of Fire</strong> with <strong>David Tennant</strong> (Fiennes played Lord Voldemort, while Tennant played Barty Crouch Jr.)</li>
         </ol>
-        <p>The path automatically snakes when it reaches 5 items per row!</p>
+        <p>The aim of the game is to find castmates that get you to your target actor!</p>
       </div>
     </div>
   );
