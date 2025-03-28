@@ -16,7 +16,7 @@ ACTOR_TV_CREDITS_URL_TEMPLATE = f"{BASE_URL}/person/{{}}/tv_credits"
 ACTOR_DETAILS_URL_TEMPLATE = f"{BASE_URL}/person/{{}}"
 
 # How many pages of popular actors to fetch (each page returns ~20 actors)
-TOTAL_PAGES = 100  # adjust as needed
+TOTAL_PAGES = 20  # adjust as needed
 
 # Define regions/zones for actor categorization
 REGIONS = {
