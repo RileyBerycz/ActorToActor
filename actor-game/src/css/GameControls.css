@@ -1,0 +1,62 @@
+.game-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+}
+
+.start-button, 
+.reset-button, 
+.play-again-button, 
+.hint-button {
+  padding: 10px 16px;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.start-button, 
+.play-again-button {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.start-button:hover, 
+.play-again-button:hover {
+  background-color: #3e8e41;
+}
+
+.reset-button {
+  background-color: #f44336;
+  color: white;
+}
+
+.reset-button:hover {
+  background-color: #d32f2f;
+}
+
+.hint-button {
+  background-color: #FFC107;
+  color: #333;
+}
+
+.hint-button:hover {
+  background-color: #FFA000;
+}
+
+.playing-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.moves-counter {
+  background-color: #e0e0e0;
+  padding: 10px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+}

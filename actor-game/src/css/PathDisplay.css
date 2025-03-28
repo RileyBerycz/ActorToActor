@@ -1,0 +1,69 @@
+.path-display {
+    background-color: #f9f9f9;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+  
+  .empty-path {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+    font-style: italic;
+  }
+  
+  .path-nodes {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 16px;
+    padding: 10px 0;
+    align-items: center;
+  }
+  
+  .path-node {
+    flex-shrink: 0;
+  }
+  
+  .path-connector {
+    display: flex;
+    align-items: center;
+    color: #666;
+    flex-shrink: 0;
+  }
+  
+  .arrow-icon {
+    font-size: 24px;
+    font-style: normal;
+  }
+  
+  /* Customizations for nodes in the path */
+  .path-node .actor-card,
+  .path-node .media-card {
+    width: 140px;  /* Slightly smaller for the path */
+  }
+  
+  .path-node .actor-image,
+  .path-node .media-image {
+    height: 160px;  /* Slightly smaller for the path */
+  }
+  
+  /* Handle horizontal scrolling */
+  .path-nodes::-webkit-scrollbar {
+    height: 8px;
+  }
+  
+  .path-nodes::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+  }
+  
+  .path-nodes::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 4px;
+  }
+  
+  .path-nodes::-webkit-scrollbar-thumb:hover {
+    background: #999;
+  }
