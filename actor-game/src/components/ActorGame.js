@@ -1,71 +1,152 @@
 import { useState, useEffect } from 'react';
+import initSqlJs from 'sql.js';
 import '../css/ActorGame.css';
 import ActorCard from './ActorCard';
 import GameControls from './GameControls';
 import PathDisplay from './PathDisplay';
 
 function ActorGame({ settings }) {
-  // Game data state
   const [actorData, setActorData] = useState(null);
   const [loading, setLoading] = useState(true);
-  
+  const [error, setError] = useState(null);
+
+  // TMDB API constants
+  const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
+  const PROFILE_SIZE = "w185";
+  const POSTER_SIZE = "w342";
+
+  useEffect(() => {
+    async function loadActorData() {
+      try {
+        setLoading(true);
+        
+        // Use the correct initialization approach
+        const SQL = await initSqlJs({
+          // Use the full URL to the WASM file
+          locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+        });
+        
+        // Fetch the database file
+        const dbFile = await fetch(`/actors_${settings.region}.db`);
+        
+        if (!dbFile.ok) {
+          throw new Error(`Failed to load actor database: ${dbFile.status} ${dbFile.statusText}`);
+        }
+        
+        // Get binary data from response
+        const buffer = await dbFile.arrayBuffer();
+        
+        // Create database from binary data
+        const db = new SQL.Database(new Uint8Array(buffer));
+        
+        // Extract actors data
+        const actors = {};
+        
+        // Query all actors
+        const actorsResults = db.exec(`SELECT id, name, popularity, profile_path, place_of_birth FROM actors`);
+        
+        if (actorsResults.length > 0 && actorsResults[0].values.length > 0) {
+          for (const [id, name, popularity, profile_path, place_of_birth] of actorsResults[0].values) {
+            const actorId = id.toString();
+            
+            // Get regions for this actor
+            const regionsResult = db.exec(`SELECT region FROM actor_regions WHERE actor_id = ${id}`);
+            const regions = regionsResult[0]?.values.map(row => row[0]) || [];
+            
+            // Get movie credits (including MCU flag)
+            const movieCreditsResult = db.exec(`
+              SELECT id, title, character, popularity, release_date, poster_path, is_mcu 
+              FROM movie_credits 
+              WHERE actor_id = ${id}
+            `);
+            
+            const movieCredits = movieCreditsResult[0]?.values.map(
+              ([id, title, character, popularity, release_date, poster_path, is_mcu]) => ({
+                id, 
+                title, 
+                character, 
+                popularity, 
+                release_date, 
+                poster_path,
+                is_mcu: !!is_mcu  // Convert to boolean
+              })
+            ) || [];
+            
+            // Get TV credits (including MCU flag)
+            const tvCreditsResult = db.exec(`
+              SELECT id, name, character, popularity, first_air_date, poster_path, is_mcu 
+              FROM tv_credits 
+              WHERE actor_id = ${id}
+            `);
+            
+            const tvCredits = tvCreditsResult[0]?.values.map(
+              ([id, name, character, popularity, first_air_date, poster_path, is_mcu]) => ({
+                id, 
+                name, 
+                character, 
+                popularity, 
+                first_air_date, 
+                poster_path,
+                is_mcu: !!is_mcu  // Convert to boolean
+              })
+            ) || [];
+            
+            // Add actor to data object
+            actors[actorId] = {
+              name,
+              popularity,
+              profile_path,
+              place_of_birth,
+              regions,
+              movie_credits: movieCredits,
+              tv_credits: tvCredits
+            };
+          }
+          
+          console.log(`Successfully loaded data with ${Object.keys(actors).length} actors`);
+          setActorData(actors);
+        } else {
+          throw new Error("No actor data found in database");
+        }
+        
+      } catch (error) {
+        console.error("Error loading actor data:", error);
+        setError(error.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    
+    loadActorData();
+  }, [settings.region]);
+
+  // Helper function to check if an actor has been in MCU
+  const actorHasBeenInMcu = (actor) => {
+    if (!actor) return false;
+    
+    // Check if any movie is MCU
+    const mcuMovie = actor.movie_credits?.find(movie => movie.is_mcu);
+    if (mcuMovie) return true;
+    
+    // Check if any TV show is MCU
+    const mcuTv = actor.tv_credits?.find(tv => tv.is_mcu);
+    if (mcuTv) return true;
+    
+    return false;
+  };
+
   // Game state
   const [gameState, setGameState] = useState('setup'); // setup, playing, won, lost
   const [startActor, setStartActor] = useState(null); 
   const [targetActor, setTargetActor] = useState(null);
   const [currentPath, setCurrentPath] = useState([]);
   const [moves, setMoves] = useState(0);
-  // eslint-disable-next-line no-unused-vars
   const [maxMoves, setMaxMoves] = useState(6); // Limit moves based on difficulty
   
   // Player input state
   const [actorGuess, setActorGuess] = useState('');
   const [mediaGuess, setMediaGuess] = useState('');
   const [guessError, setGuessError] = useState(null);
-  
-  // TMDB API constants
-  // eslint-disable-next-line no-unused-vars
-  const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
-  // eslint-disable-next-line no-unused-vars
-  const PROFILE_SIZE = "w185";
-  // eslint-disable-next-line no-unused-vars
-  const POSTER_SIZE = "w342";
-
-  // Fetch actor data on component mount
-  useEffect(() => {
-    setLoading(true);
-
-    const dataUrl = "/actors_data_GLOBAL.json"; // Hardcoded path
-
-    console.log(`Attempting to load data from: ${dataUrl}`);
-
-    fetch(dataUrl)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(
-            `Failed to load actor data: ${response.status} ${response.statusText}`
-          );
-        }
-        return response.text(); // Get raw text instead of parsing JSON
-      })
-      .then((rawText) => {
-        console.log("Raw response:", rawText.substring(0, 500) + "..."); // Log the first 500 chars
-        try {
-          const data = JSON.parse(rawText); // Try to parse manually
-          console.log(`Successfully loaded data with ${Object.keys(data).length} actors`);
-          setActorData(data);
-        } catch (error) {
-          console.error("Error parsing JSON manually:", error);
-          console.error("First 500 chars of response:", rawText.substring(0, 500));
-          throw new Error("Failed to parse JSON data");
-        }
-        setLoading(false);
-      })
-      .catch((error) => {
-        console.error("Error fetching actor data:", error);
-        setLoading(false);
-      });
-  }, []); // Removed settings.region dependency
   
   // Start a new game
   const startNewGame = () => {
@@ -245,9 +326,9 @@ function ActorGame({ settings }) {
       <h2>Failed to load game data</h2>
       <p>Please check the following:</p>
       <ul>
-        <li>Ensure you have a JSON file named <code>actors_data_{settings.region}.json</code> in the public folder</li>
+        <li>Ensure you have a database file named <code>actors_{settings.region}.db</code> in the public folder</li>
         <li>Check browser console for specific error messages</li>
-        <li>Verify the JSON file is properly formatted</li>
+        <li>Verify the database file is properly formatted</li>
       </ul>
       <button onClick={() => window.location.reload()}>Try Again</button>
     </div>
