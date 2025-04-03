@@ -26,4 +26,4 @@ jobs:
       - name: Upload SQLite data to Firebase
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: python force_local_databases_to_firestore.py
+        run: python force_github_databases_to_firestore.py
