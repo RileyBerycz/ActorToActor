@@ -1,0 +1,19 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "actors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "regions",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "popularity",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

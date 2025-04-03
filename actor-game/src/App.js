@@ -7,7 +7,7 @@ function App() {
   const [gameSettings, setGameSettings] = useState({
     region: 'GLOBAL',
     difficulty: 'normal',
-    excludeMcu: false  // New setting for MCU filtering
+    excludeMcu: false
   });
   
   return (
@@ -17,6 +17,7 @@ function App() {
         <p>Connect actors through a chain of shared movie and TV appearances</p>
       </header>
       
+      {/* Settings panel with all regions */}
       <div className="settings-panel">
         <label>
           Region:
@@ -27,8 +28,15 @@ function App() {
             <option value="GLOBAL">Global</option>
             <option value="US">United States</option>
             <option value="UK">United Kingdom</option>
+            <option value="CA">Canada</option>
+            <option value="AU">Australia</option>
             <option value="KR">South Korea</option>
-            {/* Add other regions */}
+            <option value="CN">China</option>
+            <option value="JP">Japan</option>
+            <option value="IN">India</option>
+            <option value="FR">France</option>
+            <option value="DE">Germany</option>
+            <option value="OTHER">Other Regions</option>
           </select>
         </label>
         
@@ -55,14 +63,16 @@ function App() {
         </div>
       </div>
       
+      {/* Moved ActorGame higher - this will place the start button at the top */}
+      <ActorGame settings={gameSettings} />
+      
+      {/* Example path in the middle */}
       <div className="game-instructions">
         <h3>How to Play</h3>
         <p>Starting with one actor, find a path to connect them with another actor through movies and co-stars:</p>
         
         <ExamplePath />
       </div>
-      
-      <ActorGame settings={gameSettings} />
       
       <footer>
         <p>Data provided by TMDB</p>

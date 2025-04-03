@@ -14,8 +14,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          lfs: true  # Enable LFS support
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,14 +23,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
-
-      - name: Configure Git LFS
-        run: git lfs install
+          pip install requests firebase-admin
 
       - name: Update actor data
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          ENABLE_FIREBASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python update_actor_data.py
 
       - name: Commit and push if changed
@@ -44,8 +41,8 @@ jobs:
           git add -A
           if ! git diff --quiet || ! git diff --staged --quiet; then
             git commit -m "Automated update of actor data [skip ci]"
-            # Set the remote URL to authenticate using the GITHUB_TOKEN
             git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/RileyBerycz/ActorToActor.git
+            git pull --rebase origin main
             git push
           else
             echo "No changes to commit"

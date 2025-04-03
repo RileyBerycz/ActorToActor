@@ -5,11 +5,41 @@ import time
 import sqlite3
 import random
 from requests.exceptions import ConnectionError, Timeout, RequestException
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 # Retrieve your TMDB API key from environment variables
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 if not TMDB_API_KEY:
     raise Exception("TMDB_API_KEY not set in environment variables.")
+
+# Initialize Firebase (using service account from GitHub secrets)
+firebase_key_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+if firebase_key_json:
+    # Parse JSON string from environment variable
+    firebase_key_dict = json.loads(firebase_key_json)
+    
+    # Initialize with the parsed credentials
+    cred = credentials.Certificate(firebase_key_dict)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("Firebase initialized successfully")
+else:
+    print("FIREBASE_SERVICE_ACCOUNT not set, skipping Firebase upload")
+    db = None
+
+# Firebase operation counters for free tier limits
+firebase_writes = 0
+firebase_reads = 0
+FIREBASE_DAILY_WRITE_LIMIT = 18000  # Set below the 20k limit to be safe
+FIREBASE_DAILY_READ_LIMIT = 45000   # Set below the 50k limit to be safe
+
+# Flag to enable/disable Firebase upload (can be controlled via command line)
+ENABLE_FIREBASE = os.environ.get("ENABLE_FIREBASE", "true").lower() == "true"
+if not ENABLE_FIREBASE:
+    print("Firebase upload disabled via environment variable")
+    db = None
 
 # Constants
 BASE_URL = "https://api.themoviedb.org/3"
@@ -76,6 +106,178 @@ def make_api_request(url, params, max_retries=5):
     
     print(f"Failed after {max_retries} retries. Skipping this request.")
     return None
+
+# Function to upload actor data to Firebase
+def upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, regions):
+    """Upload actor data to Firebase Firestore with existence checks and batching"""
+    global firebase_writes, firebase_reads
+    
+    if db is None or firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
+        return  # Skip if Firebase not initialized or approaching limits
+    
+    try:
+        # Create a batch for efficient writes
+        batch = db.batch()
+        actor_id_str = str(actor_id)
+        writes_in_batch = 0
+        
+        # Check if actor already exists first
+        actor_ref = db.collection('actors').document(actor_id_str)
+        actor_doc = actor_ref.get()
+        firebase_reads += 1
+        
+        if firebase_reads >= FIREBASE_DAILY_READ_LIMIT:
+            print(f"Approaching Firebase read limit ({firebase_reads}), stopping Firebase operations")
+            return
+        
+        actor_exists = actor_doc.exists
+        actor_data_changed = False
+        
+        if actor_exists:
+            existing_data = actor_doc.to_dict()
+            # Check if data needs updating (compare fields)
+            if (existing_data.get('name') != actor_data.get('name', '') or
+                existing_data.get('popularity') != actor_data.get('popularity', 0) or
+                existing_data.get('profile_path') != actor_data.get('profile_path', '') or
+                existing_data.get('place_of_birth') != actor_data.get('place_of_birth', 'Unknown') or
+                set(existing_data.get('regions', [])) != set(regions)):
+                actor_data_changed = True
+        
+        # Only update actor if it doesn't exist or data changed
+        if not actor_exists or actor_data_changed:
+            batch.set(actor_ref, {
+                'name': actor_data.get('name', ''),
+                'popularity': actor_data.get('popularity', 0),
+                'profile_path': actor_data.get('profile_path', ''),
+                'place_of_birth': actor_data.get('place_of_birth', 'Unknown'),
+                'regions': regions
+            })
+            writes_in_batch += 1
+        
+        # Handle movie credits - use a separate batch to avoid exceeding batch size limits
+        if len(movie_credits) > 0:
+            movie_batch = db.batch()
+            movie_writes = 0
+            
+            # Get existing movie credits to avoid unnecessary writes
+            if actor_exists:
+                movie_refs_snapshot = actor_ref.collection('movie_credits').limit(500).get()
+                firebase_reads += 1
+                
+                # Create a map of existing movies for quick lookup
+                existing_movies = {doc.id: doc.to_dict() for doc in movie_refs_snapshot}
+            else:
+                existing_movies = {}
+            
+            for movie in movie_credits:
+                movie_id_str = str(movie['id'])
+                movie_ref = actor_ref.collection('movie_credits').document(movie_id_str)
+                
+                # Check if movie credit exists and needs updating
+                if movie_id_str in existing_movies:
+                    existing = existing_movies[movie_id_str]
+                    if (existing.get('title') == movie.get('title', '') and
+                        existing.get('character') == movie.get('character', '') and
+                        existing.get('popularity') == movie.get('popularity', 0) and
+                        existing.get('release_date') == movie.get('release_date', '') and
+                        existing.get('poster_path') == movie.get('poster_path', '') and
+                        existing.get('is_mcu') == movie.get('is_mcu', False)):
+                        continue  # Skip if no changes
+                
+                movie_batch.set(movie_ref, {
+                    'title': movie.get('title', ''),
+                    'character': movie.get('character', ''),
+                    'popularity': movie.get('popularity', 0),
+                    'release_date': movie.get('release_date', ''),
+                    'poster_path': movie.get('poster_path', ''),
+                    'is_mcu': movie.get('is_mcu', False)
+                })
+                movie_writes += 1
+                
+                # Commit batch if getting large and create a new one
+                if movie_writes >= 400:  # Firestore batch limit is 500
+                    movie_batch.commit()
+                    firebase_writes += movie_writes
+                    if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
+                        print(f"Approaching Firebase write limit ({firebase_writes}), stopping Firebase operations")
+                        return
+                    movie_batch = db.batch()
+                    movie_writes = 0
+            
+            # Commit any remaining movie writes
+            if movie_writes > 0:
+                movie_batch.commit()
+                firebase_writes += movie_writes
+        
+        # Handle TV credits - similar approach as movies
+        if len(tv_credits) > 0:
+            tv_batch = db.batch()
+            tv_writes = 0
+            
+            # Get existing TV credits
+            if actor_exists:
+                tv_refs_snapshot = actor_ref.collection('tv_credits').limit(500).get()
+                firebase_reads += 1
+                existing_tv = {doc.id: doc.to_dict() for doc in tv_refs_snapshot}
+            else:
+                existing_tv = {}
+            
+            for tv in tv_credits:
+                tv_id_str = str(tv['id'])
+                tv_ref = actor_ref.collection('tv_credits').document(tv_id_str)
+                
+                # Check if TV credit exists and needs updating
+                if tv_id_str in existing_tv:
+                    existing = existing_tv[tv_id_str]
+                    if (existing.get('name') == tv.get('name', '') and
+                        existing.get('character') == tv.get('character', '') and
+                        existing.get('popularity') == tv.get('popularity', 0) and
+                        existing.get('first_air_date') == tv.get('first_air_date', '') and
+                        existing.get('poster_path') == tv.get('poster_path', '') and
+                        existing.get('is_mcu') == tv.get('is_mcu', False)):
+                        continue  # Skip if no changes
+                
+                tv_batch.set(tv_ref, {
+                    'name': tv.get('name', ''),
+                    'character': tv.get('character', ''),
+                    'popularity': tv.get('popularity', 0),
+                    'first_air_date': tv.get('first_air_date', ''),
+                    'poster_path': tv.get('poster_path', ''),
+                    'is_mcu': tv.get('is_mcu', False)
+                })
+                tv_writes += 1
+                
+                # Commit batch if getting large
+                if tv_writes >= 400:
+                    tv_batch.commit()
+                    firebase_writes += tv_writes
+                    if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
+                        print(f"Approaching Firebase write limit ({firebase_writes}), stopping Firebase operations")
+                        return
+                    tv_batch = db.batch()
+                    tv_writes = 0
+            
+            # Commit any remaining TV writes
+            if tv_writes > 0:
+                tv_batch.commit()
+                firebase_writes += tv_writes
+        
+        # Commit the main actor batch if it has any operations
+        if writes_in_batch > 0:
+            batch.commit()
+            firebase_writes += writes_in_batch
+        
+        # Print status update with operation counts
+        print(f"Firebase: Actor {actor_id} ({actor_data.get('name')}) processed. Total ops: {firebase_reads} reads, {firebase_writes} writes")
+        
+        # Check if we're approaching limits
+        if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT or firebase_reads >= FIREBASE_DAILY_READ_LIMIT:
+            print(f"Approaching Firebase limits (writes: {firebase_writes}, reads: {firebase_reads}), stopping Firebase operations")
+            global db
+            db = None  # Disable further Firebase operations
+            
+    except Exception as e:
+        print(f"Error uploading actor {actor_id} to Firebase: {e}")
 
 # Database setup function
 def setup_database(region):
@@ -160,342 +362,301 @@ mcu_cache = {
     'tv': {}      # tv_id -> is_mcu
 }
 
-# Checkpoint system to resume progress
-checkpoint_file = "checkpoint.json"
-last_page = 1
-last_actor_id = None
+# Track progress for resuming on future runs
+progress_file = "firebase_progress.json"
+last_processed_page = 1
+last_processed_actor = None
 
-if os.path.exists(checkpoint_file):
+# Load progress if available
+if os.path.exists(progress_file) and ENABLE_FIREBASE:
     try:
-        with open(checkpoint_file, "r") as f:
-            checkpoint = json.load(f)
-            last_page = checkpoint.get("page", 1)
-            last_actor_id = checkpoint.get("actor_id")
-            processed_actors = set(checkpoint.get("processed_actors", []))
-            mcu_cache = checkpoint.get("mcu_cache", {'movie': {}, 'tv': {}})
-            
-            # Convert string keys back to integers for the cache
-            mcu_cache['movie'] = {int(k): v for k, v in mcu_cache['movie'].items()}
-            mcu_cache['tv'] = {int(k): v for k, v in mcu_cache['tv'].items()}
-            
-            print(f"Resuming from page {last_page}, after actor ID {last_actor_id}")
+        with open(progress_file, "r") as f:
+            progress = json.load(f)
+            last_processed_page = progress.get("page", 1)
+            last_processed_actor = progress.get("actor_id")
+            firebase_writes = progress.get("writes", 0)
+            firebase_reads = progress.get("reads", 0)
+            print(f"Resuming Firebase upload from page {last_processed_page}, actor {last_processed_actor}")
     except Exception as e:
-        print(f"Error loading checkpoint: {e}. Starting from beginning.")
+        print(f"Error loading progress: {e}")
 
 # Main data fetching loop
-try:
-    for page in range(last_page, TOTAL_PAGES + 1):
-        print(f"Processing page {page}/{TOTAL_PAGES}")
+for page in range(last_processed_page, TOTAL_PAGES + 1):
+    print(f"Processing page {page}/{TOTAL_PAGES}")
+    
+    # Get page of popular actors
+    params = {
+        "api_key": TMDB_API_KEY,
+        "page": page
+    }
+    data = make_api_request(POPULAR_ACTORS_URL, params)
+    
+    if not data:
+        print(f"Failed to fetch page {page}. Trying again later.")
+        time.sleep(30)  # Wait longer before retrying the page
+        continue
+    
+    for person in data.get("results", []):
+        actor_id = person["id"]
         
-        # Save checkpoint at the beginning of each page
-        with open(checkpoint_file, "w") as f:
-            checkpoint = {
-                "page": page,
-                "actor_id": last_actor_id,
-                "processed_actors": list(processed_actors),
-                "mcu_cache": {
-                    'movie': {str(k): v for k, v in mcu_cache['movie'].items()},
-                    'tv': {str(k): v for k, v in mcu_cache['tv'].items()}
-                }
-            }
-            json.dump(checkpoint, f)
-        
-        # Get page of popular actors
-        params = {
-            "api_key": TMDB_API_KEY,
-            "page": page
-        }
-        data = make_api_request(POPULAR_ACTORS_URL, params)
-        
-        if not data:
-            print(f"Failed to fetch page {page}. Trying again later.")
-            time.sleep(30)  # Wait longer before retrying the page
+        # Skip previously processed actors
+        if actor_id in processed_actors:
             continue
+            
+        processed_actors.add(actor_id)
         
-        skip_to_actor = False
-        if page == last_page and last_actor_id is not None:
-            skip_to_actor = True
+        actor_name = person["name"]
+        popularity = person.get("popularity", 0)
+        profile_path = person.get("profile_path", "")
         
-        for person in data.get("results", []):
-            actor_id = person["id"]
+        print(f"Fetching data for {actor_name} (ID: {actor_id})")
+        
+        # Step 1: Get detailed person info
+        details_params = {"api_key": TMDB_API_KEY}
+        details_data = make_api_request(ACTOR_DETAILS_URL_TEMPLATE.format(actor_id), details_params)
+        
+        place_of_birth = "Unknown"
+        known_regions = []
+        
+        if details_data:
+            place_of_birth = details_data.get("place_of_birth", "Unknown")
             
-            # Skip previously processed actors or until we reach last_actor_id
-            if actor_id in processed_actors or (skip_to_actor and actor_id != last_actor_id):
-                continue
+            # Update profile_path if missing from popular actors list
+            if not profile_path and details_data.get("profile_path"):
+                profile_path = details_data.get("profile_path")
             
-            if skip_to_actor and actor_id == last_actor_id:
-                skip_to_actor = False
-                continue
-                
-            processed_actors.add(actor_id)
-            last_actor_id = actor_id
+            # Handle None values
+            if place_of_birth is None:
+                place_of_birth = "Unknown"
             
-            actor_name = person["name"]
-            popularity = person.get("popularity", 0)
-            profile_path = person.get("profile_path", "")
+            # Determine regions based on place of birth
+            for region_code, region_name in REGIONS.items():
+                if place_of_birth != "Unknown" and region_name in place_of_birth:
+                    known_regions.append(region_code)
             
-            print(f"Fetching data for {actor_name} (ID: {actor_id})")
+            # If no specific region matched, mark as OTHER
+            if not known_regions and place_of_birth != "Unknown":
+                known_regions.append("OTHER")
             
-            # Step 1: Get detailed person info
-            details_params = {"api_key": TMDB_API_KEY}
-            details_data = make_api_request(ACTOR_DETAILS_URL_TEMPLATE.format(actor_id), details_params)
-            
-            place_of_birth = "Unknown"
-            known_regions = []
-            
-            if details_data:
-                place_of_birth = details_data.get("place_of_birth", "Unknown")
-                
-                # Update profile_path if missing from popular actors list
-                if not profile_path and details_data.get("profile_path"):
-                    profile_path = details_data.get("profile_path")
-                
-                # Handle None values
-                if place_of_birth is None:
-                    place_of_birth = "Unknown"
-                
-                # Determine regions based on place of birth
-                for region_code, region_name in REGIONS.items():
-                    if place_of_birth != "Unknown" and region_name in place_of_birth:
-                        known_regions.append(region_code)
-                
-                # If no specific region matched, mark as OTHER
-                if not known_regions and place_of_birth != "Unknown":
-                    known_regions.append("OTHER")
-                
-                # If popularity is above threshold, mark as globally recognized
-                if popularity >= GLOBAL_POPULARITY_THRESHOLD:
-                    known_regions.append("GLOBAL")
-            
-            # Step 2: Get movie credits
-            credits_params = {"api_key": TMDB_API_KEY}
-            credits_data = make_api_request(ACTOR_MOVIE_CREDITS_URL_TEMPLATE.format(actor_id), credits_params)
-            
-            movie_credits = []
-            
-            if credits_data:
-                for credit in credits_data.get("cast", []):
-                    # Only add movies above popularity threshold
-                    if credit.get("popularity", 0) > 1.5:
-                        movie_id = credit["id"]
-                        poster_path = credit.get("poster_path", "")
+            # If popularity is above threshold, mark as globally recognized
+            if popularity >= GLOBAL_POPULARITY_THRESHOLD:
+                known_regions.append("GLOBAL")
+        
+        # Step 2: Get movie credits
+        credits_params = {"api_key": TMDB_API_KEY}
+        credits_data = make_api_request(ACTOR_MOVIE_CREDITS_URL_TEMPLATE.format(actor_id), credits_params)
+        
+        movie_credits = []
+        
+        if credits_data:
+            for credit in credits_data.get("cast", []):
+                # Only add movies above popularity threshold
+                if credit.get("popularity", 0) > 1.5:
+                    movie_id = credit["id"]
+                    poster_path = credit.get("poster_path", "")
+                    
+                    # Check MCU status from cache first
+                    is_mcu = False
+                    if movie_id in mcu_cache['movie']:
+                        is_mcu = mcu_cache['movie'][movie_id]
+                    else:
+                        # Get individual movie details to check production companies
+                        movie_params = {"api_key": TMDB_API_KEY}
+                        movie_data = make_api_request(f"{BASE_URL}/movie/{movie_id}", movie_params)
                         
-                        # Check MCU status from cache first
-                        is_mcu = False
-                        if movie_id in mcu_cache['movie']:
-                            is_mcu = mcu_cache['movie'][movie_id]
-                        else:
-                            # Get individual movie details to check production companies
-                            movie_params = {"api_key": TMDB_API_KEY}
-                            movie_data = make_api_request(f"{BASE_URL}/movie/{movie_id}", movie_params)
+                        if movie_data:
+                            production_companies = movie_data.get("production_companies", [])
                             
-                            if movie_data:
-                                production_companies = movie_data.get("production_companies", [])
-                                
-                                # Check if Marvel Studios is a production company
-                                for company in production_companies:
-                                    if "Marvel Studios" in company.get("name", ""):
-                                        is_mcu = True
-                                        break
-                                
-                                # Save to cache
-                                mcu_cache['movie'][movie_id] = is_mcu
-                        
-                        # Add to movie credits with MCU flag
-                        movie_credits.append({
-                            "id": movie_id,
-                            "title": credit.get("title", ""),
-                            "character": credit.get("character", ""),
-                            "popularity": credit.get("popularity", 0),
-                            "release_date": credit.get("release_date", ""),
-                            "poster_path": poster_path,
-                            "is_mcu": is_mcu
-                        })
-                        
-                        # More controlled rate limiting
-                        if movie_id not in mcu_cache['movie']:
-                            time.sleep(0.25)  # 250ms between new movie lookups
-            
-            # Step 3: Get TV credits
-            tv_credits_params = {"api_key": TMDB_API_KEY}
-            tv_credits_data = make_api_request(ACTOR_TV_CREDITS_URL_TEMPLATE.format(actor_id), tv_credits_params)
-            
-            tv_credits = []
-            if tv_credits_data:
-                for credit in tv_credits_data.get("cast", []):
-                    if credit.get("popularity", 0) > 1.5:
-                        tv_id = credit["id"]
-                        poster_path = credit.get("poster_path", "")
-                        
-                        # Check MCU status from cache first
-                        is_mcu = False
-                        if tv_id in mcu_cache['tv']:
-                            is_mcu = mcu_cache['tv'][tv_id]
-                        else:
-                            # Get TV show details to check production companies
-                            tv_params = {"api_key": TMDB_API_KEY}
-                            tv_data = make_api_request(f"{BASE_URL}/tv/{tv_id}", tv_params)
+                            # Check if Marvel Studios is a production company
+                            for company in production_companies:
+                                if "Marvel Studios" in company.get("name", ""):
+                                    is_mcu = True
+                                    break
                             
-                            if tv_data:
-                                production_companies = tv_data.get("production_companies", [])
-                                
-                                # Check if Marvel Studios is a production company
-                                for company in production_companies:
-                                    if "Marvel Studios" in company.get("name", ""):
-                                        is_mcu = True
-                                        break
-                                    
-                                    # Also check for Marvel Television
-                                    if "Marvel Television" in company.get("name", ""):
-                                        is_mcu = True
-                                        break
-                                
-                                # Save to cache
-                                mcu_cache['tv'][tv_id] = is_mcu
+                            # Save to cache
+                            mcu_cache['movie'][movie_id] = is_mcu
+                    
+                    # Add to movie credits with MCU flag
+                    movie_credits.append({
+                        "id": movie_id,
+                        "title": credit.get("title", ""),
+                        "character": credit.get("character", ""),
+                        "popularity": credit.get("popularity", 0),
+                        "release_date": credit.get("release_date", ""),
+                        "poster_path": poster_path,
+                        "is_mcu": is_mcu
+                    })
+                    
+                    # More controlled rate limiting
+                    if movie_id not in mcu_cache['movie']:
+                        time.sleep(0.25)  # 250ms between new movie lookups
+        
+        # Step 3: Get TV credits
+        tv_credits_params = {"api_key": TMDB_API_KEY}
+        tv_credits_data = make_api_request(ACTOR_TV_CREDITS_URL_TEMPLATE.format(actor_id), tv_credits_params)
+        
+        tv_credits = []
+        if tv_credits_data:
+            for credit in tv_credits_data.get("cast", []):
+                if credit.get("popularity", 0) > 1.5:
+                    tv_id = credit["id"]
+                    poster_path = credit.get("poster_path", "")
+                    
+                    # Check MCU status from cache first
+                    is_mcu = False
+                    if tv_id in mcu_cache['tv']:
+                        is_mcu = mcu_cache['tv'][tv_id]
+                    else:
+                        # Get TV show details to check production companies
+                        tv_params = {"api_key": TMDB_API_KEY}
+                        tv_data = make_api_request(f"{BASE_URL}/tv/{tv_id}", tv_params)
                         
-                        tv_credits.append({
-                            "id": tv_id,
-                            "name": credit.get("name", ""),
-                            "character": credit.get("character", ""),
-                            "popularity": credit.get("popularity", 0),
-                            "first_air_date": credit.get("first_air_date", ""),
-                            "poster_path": poster_path,
-                            "is_mcu": is_mcu
-                        })
-                        
-                        # More controlled rate limiting
-                        if tv_id not in mcu_cache['tv']:
-                            time.sleep(0.25)  # 250ms between new TV lookups
+                        if tv_data:
+                            production_companies = tv_data.get("production_companies", [])
+                            
+                            # Check if Marvel Studios is a production company
+                            for company in production_companies:
+                                if "Marvel Studios" in company.get("name", ""):
+                                    is_mcu = True
+                                    break
+                                
+                                # Also check for Marvel Television
+                                if "Marvel Television" in company.get("name", ""):
+                                    is_mcu = True
+                                    break
+                            
+                            # Save to cache
+                            mcu_cache['tv'][tv_id] = is_mcu
+                    
+                    tv_credits.append({
+                        "id": tv_id,
+                        "name": credit.get("name", ""),
+                        "character": credit.get("character", ""),
+                        "popularity": credit.get("popularity", 0),
+                        "first_air_date": credit.get("first_air_date", ""),
+                        "poster_path": poster_path,
+                        "is_mcu": is_mcu
+                    })
+                    
+                    # More controlled rate limiting
+                    if tv_id not in mcu_cache['tv']:
+                        time.sleep(0.25)  # 250ms between new TV lookups
+        
+        # Create actor data object for Firebase
+        actor_data = {
+            "name": actor_name,
+            "popularity": popularity,
+            "profile_path": profile_path,
+            "place_of_birth": place_of_birth
+        }
+        
+        # Upload to Firebase (if enabled)
+        upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, known_regions)
             
-            # Insert data into appropriate region databases
-            for region in known_regions:
-                if region not in databases:
-                    continue
+        # Insert data into appropriate region databases
+        for region in known_regions:
+            if region not in databases:
+                continue
                 
-                conn, cursor = databases[region]
-                
-                # Clean text for SQL
-                safe_name = actor_name.replace("'", "''")
-                safe_place = place_of_birth.replace("'", "''") if place_of_birth else "Unknown"
-                
-                # Insert actor data (no is_mcu flag here anymore)
+            conn, cursor = databases[region]
+            
+            # Clean text for SQL
+            safe_name = actor_name.replace("'", "''")
+            safe_place = place_of_birth.replace("'", "''") if place_of_birth else "Unknown"
+            
+            # Insert actor data (no is_mcu flag here anymore)
+            cursor.execute(f'''
+            INSERT OR REPLACE INTO actors 
+            (id, name, popularity, profile_path, place_of_birth)
+            VALUES (
+                {actor_id}, 
+                '{safe_name}', 
+                {popularity}, 
+                '{profile_path}', 
+                '{safe_place}'
+            )
+            ''')
+            
+            # Insert region data for this actor
+            for r in known_regions:
                 cursor.execute(f'''
-                INSERT OR REPLACE INTO actors 
-                (id, name, popularity, profile_path, place_of_birth)
+                INSERT OR REPLACE INTO actor_regions (actor_id, region)
+                VALUES ({actor_id}, '{r}')
+                ''')
+            
+            # Insert movie credits (with is_mcu flag)
+            for movie in movie_credits:
+                safe_title = movie["title"].replace("'", "''")
+                safe_character = movie["character"].replace("'", "''")
+                
+                cursor.execute(f'''
+                INSERT OR REPLACE INTO movie_credits 
+                (id, actor_id, title, character, popularity, release_date, poster_path, is_mcu)
                 VALUES (
+                    {movie["id"]}, 
                     {actor_id}, 
-                    '{safe_name}', 
-                    {popularity}, 
-                    '{profile_path}', 
-                    '{safe_place}'
+                    '{safe_title}', 
+                    '{safe_character}', 
+                    {movie["popularity"]}, 
+                    '{movie["release_date"]}', 
+                    '{movie["poster_path"]}',
+                    {1 if movie["is_mcu"] else 0}
                 )
                 ''')
-                
-                # Insert region data for this actor
-                for r in known_regions:
-                    cursor.execute(f'''
-                    INSERT OR REPLACE INTO actor_regions (actor_id, region)
-                    VALUES ({actor_id}, '{r}')
-                    ''')
-                
-                # Insert movie credits (with is_mcu flag)
-                for movie in movie_credits:
-                    safe_title = movie["title"].replace("'", "''")
-                    safe_character = movie["character"].replace("'", "''")
-                    
-                    cursor.execute(f'''
-                    INSERT OR REPLACE INTO movie_credits 
-                    (id, actor_id, title, character, popularity, release_date, poster_path, is_mcu)
-                    VALUES (
-                        {movie["id"]}, 
-                        {actor_id}, 
-                        '{safe_title}', 
-                        '{safe_character}', 
-                        {movie["popularity"]}, 
-                        '{movie["release_date"]}', 
-                        '{movie["poster_path"]}',
-                        {1 if movie["is_mcu"] else 0}
-                    )
-                    ''')
-                
-                # Insert TV credits (with is_mcu flag)
-                for tv in tv_credits:
-                    safe_name = tv["name"].replace("'", "''")
-                    safe_character = tv["character"].replace("'", "''")
-                    
-                    cursor.execute(f'''
-                    INSERT OR REPLACE INTO tv_credits 
-                    (id, actor_id, name, character, popularity, first_air_date, poster_path, is_mcu)
-                    VALUES (
-                        {tv["id"]}, 
-                        {actor_id}, 
-                        '{safe_name}', 
-                        '{safe_character}', 
-                        {tv["popularity"]}, 
-                        '{tv["first_air_date"]}', 
-                        '{tv["poster_path"]}',
-                        {1 if tv["is_mcu"] else 0}
-                    )
-                    ''')
-                
-                conn.commit()
             
-            # Delay between actors
-            time.sleep(0.5)
+            # Insert TV credits (with is_mcu flag)
+            for tv in tv_credits:
+                safe_name = tv["name"].replace("'", "''")
+                safe_character = tv["character"].replace("'", "''")
+                
+                cursor.execute(f'''
+                INSERT OR REPLACE INTO tv_credits 
+                (id, actor_id, name, character, popularity, first_air_date, poster_path, is_mcu)
+                VALUES (
+                    {tv["id"]}, 
+                    {actor_id}, 
+                    '{safe_name}', 
+                    '{safe_character}', 
+                    {tv["popularity"]}, 
+                    '{tv["first_air_date"]}', 
+                    '{tv["poster_path"]}',
+                    {1 if tv["is_mcu"] else 0}
+                )
+                ''')
             
-            # Save checkpoint after each actor
-            with open(checkpoint_file, "w") as f:
-                checkpoint = {
-                    "page": page,
-                    "actor_id": last_actor_id,
-                    "processed_actors": list(processed_actors),
-                    "mcu_cache": {
-                        'movie': {str(k): v for k, v in mcu_cache['movie'].items()},
-                        'tv': {str(k): v for k, v in mcu_cache['tv'].items()}
-                    }
-                }
-                json.dump(checkpoint, f)
-        
-        # Delay between pages
-        time.sleep(1)
-        print(f"Completed page {page}/{TOTAL_PAGES}")
-
-except Exception as e:
-    print(f"Error in main processing loop: {e}")
-    # Save checkpoint on error
-    with open(checkpoint_file, "w") as f:
-        checkpoint = {
-            "page": page,
-            "actor_id": last_actor_id,
-            "processed_actors": list(processed_actors),
-            "mcu_cache": {
-                'movie': {str(k): v for k, v in mcu_cache['movie'].items()},
-                'tv': {str(k): v for k, v in mcu_cache['tv'].items()}
-            }
-        }
-        json.dump(checkpoint, f)
-finally:
-    # Optimize databases and close connections
-    for region, (conn, cursor) in databases.items():
-        try:
-            # Create indexes for better performance
-            cursor.execute("CREATE INDEX idx_movie_credits_actor ON movie_credits (actor_id)")
-            cursor.execute("CREATE INDEX idx_movie_credits_mcu ON movie_credits (is_mcu)")
-            cursor.execute("CREATE INDEX idx_tv_credits_actor ON tv_credits (actor_id)")
-            cursor.execute("CREATE INDEX idx_tv_credits_mcu ON tv_credits (is_mcu)")
-            cursor.execute("CREATE INDEX idx_actor_regions ON actor_regions (region)")
-            
-            # Optimize database
-            cursor.execute("VACUUM")
             conn.commit()
-            conn.close()
-            
-            print(f"Database for region {region} saved successfully")
-        except Exception as e:
-            print(f"Error finalizing database for region {region}: {e}")
+        
+        # Save progress information
+        if ENABLE_FIREBASE:
+            with open(progress_file, "w") as f:
+                json.dump({
+                    "page": page,
+                    "actor_id": actor_id,
+                    "writes": firebase_writes,
+                    "reads": firebase_reads
+                }, f)
+        
+        # Delay between actors
+        time.sleep(0.5)
+    
+    # Delay between pages
+    time.sleep(1)
+    print(f"Completed page {page}/{TOTAL_PAGES}")
 
-# Clean up checkpoint file on successful completion
-if os.path.exists(checkpoint_file):
-    os.remove(checkpoint_file)
+# Optimize databases and close connections
+for region, (conn, cursor) in databases.items():
+    # Create indexes for better performance
+    cursor.execute("CREATE INDEX idx_movie_credits_actor ON movie_credits (actor_id)")
+    cursor.execute("CREATE INDEX idx_movie_credits_mcu ON movie_credits (is_mcu)")
+    cursor.execute("CREATE INDEX idx_tv_credits_actor ON tv_credits (actor_id)")
+    cursor.execute("CREATE INDEX idx_tv_credits_mcu ON tv_credits (is_mcu)")
+    cursor.execute("CREATE INDEX idx_actor_regions ON actor_regions (region)")
+    
+    # Optimize database
+    cursor.execute("VACUUM")
+    conn.commit()
+    conn.close()
+    
+    print(f"Database for region {region} saved successfully")
 
-print("All data successfully updated and written to SQLite databases")
+print("All data successfully updated and written to both SQLite databases and Firebase")
