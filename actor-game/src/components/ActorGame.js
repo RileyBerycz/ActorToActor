@@ -4,11 +4,12 @@ import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 import GameControls from './GameControls';
 import PathDisplay from './PathDisplay';
 import '../css/ActorGame.css'; 
+import { db as firebaseDb } from '../firebase'; // Import from central config
 
-function ActorGame({ settings, db }) {
+function ActorGame({ settings }) {
   const [actorData, setActorData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [loadingProgress, setLoadingProgress] = useState(0); // Add loading progress state
+  const [loadingProgress, setLoadingProgress] = useState(0);
   const [error, setError] = useState(null);
 
   // TMDB API constants
@@ -24,7 +25,7 @@ function ActorGame({ settings, db }) {
         
         // Try loading from Firebase first
         try {
-          const actorsRef = collection(db, "actors");
+          const actorsRef = collection(firebaseDb, "actors");
           const q = query(
             actorsRef, 
             where("regions", "array-contains", settings.region),
@@ -37,21 +38,70 @@ function ActorGame({ settings, db }) {
           // If we got results from Firebase, use them
           if (!actorSnapshot.empty) {
             const actors = {};
-            actorSnapshot.forEach(doc => {
+            let processedCount = 0;
+            const totalActors = actorSnapshot.size;
+            
+            for (const doc of actorSnapshot.docs) {
               const data = doc.data();
-              actors[doc.id] = {
+              const actorId = doc.id;
+              
+              // Query movie credits
+              const movieCreditsRef = collection(firebaseDb, `actors/${actorId}/movie_credits`);
+              const movieCreditsSnapshot = await getDocs(movieCreditsRef);
+              
+              const movieCredits = movieCreditsSnapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                  id: doc.id,
+                  title: data.title,
+                  character: data.character,
+                  popularity: data.popularity,
+                  release_date: data.release_date,
+                  poster_path: data.poster_path,
+                  is_mcu: data.is_mcu
+                };
+              });
+              
+              // Query TV credits
+              const tvCreditsRef = collection(firebaseDb, `actors/${actorId}/tv_credits`);
+              const tvCreditsSnapshot = await getDocs(tvCreditsRef);
+              
+              const tvCredits = tvCreditsSnapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                  id: doc.id,
+                  name: data.name,
+                  character: data.character,
+                  popularity: data.popularity,
+                  first_air_date: data.first_air_date,
+                  poster_path: data.poster_path,
+                  is_mcu: data.is_mcu
+                };
+              });
+              
+              // Add to actors data
+              actors[actorId] = {
                 name: data.name,
                 popularity: data.popularity,
                 profile_path: data.profile_path,
                 place_of_birth: data.place_of_birth,
                 regions: data.regions,
-                movie_credits: data.movie_credits,
-                tv_credits: data.tv_credits
+                movie_credits: movieCredits,
+                tv_credits: tvCredits
               };
-            });
+              
+              // Update progress based on processed actors
+              processedCount++;
+              const progressPercentage = 30 + (processedCount / totalActors) * 60;
+              setLoadingProgress(Math.round(progressPercentage));
+            }
+            
+            console.log(`Successfully loaded data from Firebase with ${Object.keys(actors).length} actors`);
             setActorData(actors);
             setLoadingProgress(100);
-            setLoading(false);
+            setTimeout(() => {
+              setLoading(false);
+            }, 500);
             return; // Success - exit the function
           }
           
@@ -76,21 +126,21 @@ function ActorGame({ settings, db }) {
         const buffer = await dbFile.arrayBuffer();
         setLoadingProgress(80);
         
-        const db = new SQL.Database(new Uint8Array(buffer));
+        const sqlDb = new SQL.Database(new Uint8Array(buffer));
         setLoadingProgress(90);
         
         const actors = {};
         
-        const actorsResults = db.exec(`SELECT id, name, popularity, profile_path, place_of_birth FROM actors`);
+        const actorsResults = sqlDb.exec(`SELECT id, name, popularity, profile_path, place_of_birth FROM actors`);
         
         if (actorsResults.length > 0 && actorsResults[0].values.length > 0) {
           for (const [id, name, popularity, profile_path, place_of_birth] of actorsResults[0].values) {
             const actorId = id.toString();
             
-            const regionsResult = db.exec(`SELECT region FROM actor_regions WHERE actor_id = ${id}`);
+            const regionsResult = sqlDb.exec(`SELECT region FROM actor_regions WHERE actor_id = ${id}`);
             const regions = regionsResult[0]?.values.map(row => row[0]) || [];
             
-            const movieCreditsResult = db.exec(`
+            const movieCreditsResult = sqlDb.exec(`
               SELECT id, title, character, popularity, release_date, poster_path, is_mcu 
               FROM movie_credits 
               WHERE actor_id = ${id}
@@ -108,7 +158,7 @@ function ActorGame({ settings, db }) {
               })
             ) || [];
             
-            const tvCreditsResult = db.exec(`
+            const tvCreditsResult = sqlDb.exec(`
               SELECT id, name, character, popularity, first_air_date, poster_path, is_mcu 
               FROM tv_credits 
               WHERE actor_id = ${id}
@@ -178,11 +228,21 @@ function ActorGame({ settings, db }) {
   return (
     <div className="actor-game">
       <div className="game-controls-container">
-        <GameControls /* your props */ />
+        <GameControls 
+          actorData={actorData}
+          settings={settings}
+          baseImgUrl={BASE_IMG_URL}
+          profileSize={PROFILE_SIZE}
+          posterSize={POSTER_SIZE}
+        />
       </div>
       
       <div className="path-display-container">
-        <PathDisplay /* your props */ />
+        <PathDisplay 
+          baseImgUrl={BASE_IMG_URL}
+          profileSize={PROFILE_SIZE}
+          posterSize={POSTER_SIZE}
+        />
       </div>
     </div>
   );

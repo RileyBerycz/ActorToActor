@@ -2,6 +2,7 @@ import './App.css';
 import { useState } from 'react';
 import ActorGame from './components/ActorGame';
 import ExamplePath from './components/ExamplePath';
+import { db } from './firebase';
 
 function App() {
   const [gameSettings, setGameSettings] = useState({
