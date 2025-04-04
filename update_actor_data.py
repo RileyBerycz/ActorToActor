@@ -659,4 +659,36 @@ for region, (conn, cursor) in databases.items():
     
     print(f"Database for region {region} saved successfully")
 
-print("All data successfully updated and written to both SQLite databases and Firebase")
+# Clean up progress file if everything completed successfully
+if os.path.exists(progress_file) and ENABLE_FIREBASE:
+    try:
+        os.remove(progress_file)
+        print("Firebase upload completed successfully, removed progress file")
+    except Exception as e:
+        print(f"Warning: Could not remove progress file: {e}")
+
+# Summary of operations
+if ENABLE_FIREBASE and db is not None:
+    print(f"""
+Firebase Upload Summary:
+-----------------------
+Total reads:  {firebase_reads} (daily limit: {FIREBASE_DAILY_READ_LIMIT})
+Total writes: {firebase_writes} (daily limit: {FIREBASE_DAILY_WRITE_LIMIT})
+Status: {'Completed' if firebase_writes < FIREBASE_DAILY_WRITE_LIMIT and firebase_reads < FIREBASE_DAILY_READ_LIMIT else 'Partial (reached limits)'}
+""")
+
+print("""
+All data successfully updated:
+- SQLite databases saved to GitHub repository (as backup)
+- Data uploaded to Firebase (for production use)
+""")
+
+# Add a flag file to indicate which source is most up-to-date
+with open("actor-game/public/data_source_info.json", "w") as f:
+    json.dump({
+        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "sqlite_complete": True,
+        "firebase_complete": ENABLE_FIREBASE and db is not None and firebase_writes < FIREBASE_DAILY_WRITE_LIMIT,
+        "firebase_writes": firebase_writes,
+        "firebase_reads": firebase_reads
+    }, f)
