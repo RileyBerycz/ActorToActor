@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import './GameControls.css';
+import '../css/GameControls.css';
 
 function GameControls({ 
   actorData, 
