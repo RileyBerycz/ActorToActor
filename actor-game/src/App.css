@@ -200,6 +200,8 @@ footer {
   width: 70px;
   height: 105px;
   object-fit: cover;
+  display: block;
+  margin: 0 auto;
 }
 
 .path-item p {
@@ -305,4 +307,254 @@ footer {
 
 .path-toggle:hover {
   background-color: #ddd;
+}
+
+/* Add to your App.css or create a new CSS file */
+.start-game-container {
+  text-align: center;
+  margin: 30px 0;
+}
+
+.start-game-button {
+  background-color: #4CAF50;
+  color: white;
+  font-size: 1.2rem;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+  transition: all 0.3s ease;
+}
+
+.start-game-button:hover {
+  background-color: #45a049;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.actor-game-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.start-actor, .target-actor {
+  text-align: center;
+  margin: 0 20px;
+}
+
+.actor-image {
+  width: 120px;
+  height: 180px;
+  object-fit: cover;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1); /* Lighter shadow instead of borders */
+  display: block;
+  margin: 0 auto;
+}
+
+.actor-name {
+  margin-top: 10px;
+  font-weight: bold;
+}
+
+.start-actor .actor-label {
+  background-color: #4CAF50; /* Green for start */
+  color: white;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 0.8rem;
+}
+
+.target-actor .actor-label {
+  background-color: #f44336; /* Red for target */
+  color: white;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 0.8rem;
+}
+
+.connection-arrow {
+  font-size: 2rem;
+  color: #555;
+}
+
+.path-display-container {
+  margin: 20px auto;
+  max-width: 800px;
+}
+
+.game-completion {
+  text-align: center;
+  margin-top: 20px;
+  padding: 20px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.reset-game-button {
+  background-color: #007bff;
+  color: white;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  margin-top: 10px;
+}
+
+/* Hint system styling */
+.hint-container {
+  margin: 15px auto;
+  text-align: center;
+}
+
+.hint-button {
+  background-color: #ff9800;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+}
+
+.hint-button:hover {
+  background-color: #f57c00;
+}
+
+.hint-display {
+  background-color: #fff3e0;
+  border-left: 4px solid #ff9800;
+  padding: 15px;
+  margin: 15px auto;
+  max-width: 80%;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.hint-icon {
+  font-size: 24px;
+  margin-right: 12px;
+}
+
+.hint-message {
+  font-style: italic;
+  color: #333;
+}
+
+/* Optimal path styling */
+.optimal-path-section {
+  margin-top: 20px;
+}
+
+.show-optimal-path-button {
+  background-color: #673ab7;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 15px;
+}
+
+.optimal-path-display {
+  margin: 20px auto;
+  padding: 15px;
+  background-color: #f5f5f5;
+  border-radius: 8px;
+  max-width: 90%;
+}
+
+.optimal-path-items {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.optimal-item {
+  width: 90px;
+  text-align: center;
+  padding: 5px;
+  border-radius: 6px;
+  /* Remove borders */
+  border: none;
+  background-color: #f9f9f9;
+}
+
+.optimal-item.actor {
+  border: 2px solid #3f51b5;
+}
+
+.optimal-item.movie {
+  border: 2px solid #f44336;
+}
+
+.optimal-item img {
+  width: 70px;
+  height: 105px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.optimal-item .item-name {
+  font-size: 11px;
+  margin-top: 5px;
+  max-height: 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-container {
+  margin: 20px auto;
+  max-width: 600px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 15px;
+  font-size: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+
+.search-results {
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  padding: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+}
+
+.search-result-item:hover {
+  background-color: #f5f5f5;
+}
+
+.search-result-img {
+  width: 50px;
+  height: 75px;
+  object-fit: cover;
+  margin-right: 10px;
+  border-radius: 4px;
 }
