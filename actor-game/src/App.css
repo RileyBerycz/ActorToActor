@@ -309,7 +309,6 @@ footer {
   background-color: #ddd;
 }
 
-/* Add to your App.css or create a new CSS file */
 .start-game-container {
   text-align: center;
   margin: 30px 0;
@@ -417,7 +416,7 @@ footer {
 }
 
 .hint-button {
-  background-color: #ff9800;
+  background-color: #f57c00;
   color: white;
   border: none;
   padding: 8px 16px;
@@ -557,4 +556,13 @@ footer {
   object-fit: cover;
   margin-right: 10px;
   border-radius: 4px;
+}
+.region-selector {
+  font-weight: bold;
+}
+
+.global-selected {
+  border: 2px solid #d32f2f;
+  background-color: #ffebee;
+  font-weight: bold;
 }

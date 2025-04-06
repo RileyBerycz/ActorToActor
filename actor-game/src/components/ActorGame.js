@@ -290,26 +290,56 @@ function ActorGame({ settings, onReset }) {
 
   useEffect(() => {
     if (actorData && !loading && !startActor) {
-      const actorIds = Object.keys(actorData);
-      if (actorIds.length >= 2) {
-        const sortedActors = actorIds
-          .filter(id => actorData[id].popularity > 5)
-          .sort((a, b) => actorData[b].popularity - actorData[a].popularity);
-        
-        const topActors = sortedActors.slice(0, Math.max(20, Math.floor(sortedActors.length * 0.2)));
-        
-        const startIndex = Math.floor(Math.random() * topActors.length);
-        let targetIndex;
-        do {
-          targetIndex = Math.floor(Math.random() * topActors.length);
-        } while (targetIndex === startIndex);
-        
-        setStartActor(actorData[topActors[startIndex]]);
-        setTargetActor(actorData[topActors[targetIndex]]);
-        setGamePhase('playing');
+      // Filter actors with profile images (better UI)
+      const filteredActors = Object.entries(actorData)
+        .filter(([_, actor]) => actor.profile_path)
+        .map(([id, actor]) => ({
+          id,
+          ...actor
+        }));
+      
+      // Sort by popularity
+      const sortedActors = [...filteredActors].sort((a, b) => b.popularity - a.popularity);
+      
+      // Get top 10% for start actor (always well-known)
+      const topActors = sortedActors.slice(0, Math.floor(sortedActors.length * 0.1));
+      const startIndex = Math.floor(Math.random() * topActors.length);
+      const newStartActor = topActors[startIndex];
+      
+      // Select target actor based on difficulty
+      let targetActorPool;
+      switch(settings.difficulty) {
+        case 'easy':
+          // Well-known actors (top 20%)
+          targetActorPool = sortedActors.slice(0, Math.floor(sortedActors.length * 0.2));
+          break;
+        case 'normal':
+          // Medium popularity (20%-50%)
+          targetActorPool = sortedActors.slice(
+            Math.floor(sortedActors.length * 0.2),
+            Math.floor(sortedActors.length * 0.5)
+          );
+          break;
+        case 'hard':
+          // Less known actors (50%-100%)
+          targetActorPool = sortedActors.slice(Math.floor(sortedActors.length * 0.5));
+          break;
+        default:
+          targetActorPool = sortedActors;
       }
+      
+      // Make sure we don't pick the same actor
+      targetActorPool = targetActorPool.filter(actor => actor.id !== newStartActor.id);
+      
+      // Select random target actor from appropriate pool
+      const targetIndex = Math.floor(Math.random() * targetActorPool.length);
+      const newTargetActor = targetActorPool[targetIndex];
+      
+      setStartActor(newStartActor);
+      setTargetActor(newTargetActor);
+      setGamePhase('playing');
     }
-  }, [actorData, loading, startActor]);
+  }, [actorData, loading, settings.difficulty, startActor]);
 
   useEffect(() => {
     if (startActor && targetActor && actorData) {

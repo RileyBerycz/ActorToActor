@@ -19,16 +19,18 @@ function App() {
         <p>Connect actors through a chain of shared movie and TV appearances</p>
       </header>
       
+        
       {/* Settings panel - always visible */}
       <div className="settings-panel">
-        <label>
+        <label className="region-selector">
           Region:
           <select 
             value={gameSettings.region} 
             onChange={(e) => setGameSettings({...gameSettings, region: e.target.value})}
             disabled={gameStarted}
+            className={gameSettings.region === 'GLOBAL' ? 'global-selected' : ''}
           >
-            <option value="GLOBAL">Global</option>
+            <option value="GLOBAL">Global (Very Difficult)</option>
             <option value="US">United States</option>
             <option value="UK">United Kingdom</option>
             <option value="CA">Canada</option>
