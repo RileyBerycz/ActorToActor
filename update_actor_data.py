@@ -26,23 +26,14 @@ POSTER_SIZE = "w342"
 # How many pages of popular actors to fetch
 TOTAL_PAGES = 100
 
-# Define regions
+# Define regions we want to track
 REGIONS = {
-    "US": "United States",
-    "UK": "United Kingdom",
-    "CA": "Canada",
-    "AU": "Australia",
-    "KR": "South Korea",
-    "CN": "China",
-    "JP": "Japan",
-    "IN": "India",
-    "FR": "France",
-    "DE": "Germany",
-    "OTHER": "Other"
+    "US": {"name": "United States", "countries": ["US"], "threshold": 15},
+    "UK": {"name": "United Kingdom", "countries": ["GB"], "threshold": 15},
+    "EU": {"name": "Europe", "countries": ["FR", "DE", "ES", "IT"], "threshold": 15},
+    "ASIA": {"name": "Asia", "countries": ["JP", "KR", "CN", "IN"], "threshold": 15},
+    "GLOBAL": {"name": "Global", "countries": [], "threshold": 25}
 }
-
-# Popularity threshold for global recognition
-GLOBAL_POPULARITY_THRESHOLD = 15
 
 # Robust API request function with exponential backoff
 def make_api_request(url, params, max_retries=5):
@@ -160,6 +151,219 @@ mcu_cache = {
     'tv': {}      # tv_id -> is_mcu
 }
 
+# Cache for release/availability data to reduce API calls
+release_cache = {
+    'movie': {},  # movie_id -> countries
+    'tv': {}      # tv_id -> countries
+}
+
+def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
+    """Calculate an actor's popularity in different regions based on their work"""
+    region_scores = {region: 0 for region in REGIONS.keys()}
+    region_release_counts = {region: 0 for region in REGIONS.keys()}
+    
+    # Process movie credits
+    for movie in movie_credits:
+        movie_id = movie["id"]
+        movie_popularity = movie["popularity"]
+        
+        # Get regional release data for this movie
+        release_data = get_movie_release_data(movie_id)
+        
+        # For each region, check if the movie was released there and add to popularity
+        for region, info in REGIONS.items():
+            if region == "GLOBAL":
+                # Global score uses overall movie popularity
+                region_scores["GLOBAL"] += movie_popularity
+                region_release_counts["GLOBAL"] += 1
+                continue
+                
+            # Check if movie was released in any of the region's countries
+            released_in_region = False
+            for country in info["countries"]:
+                if country in release_data:
+                    released_in_region = True
+                    break
+            
+            if released_in_region:
+                region_scores[region] += movie_popularity
+                region_release_counts[region] += 1
+    
+    # Process TV credits similarly
+    for tv in tv_credits:
+        tv_id = tv["id"]
+        tv_popularity = tv["popularity"]
+        
+        # Get regional availability data for this TV show
+        availability_data = get_tv_availability_data(tv_id)
+        
+        # For each region, check if the TV show was available there
+        for region, info in REGIONS.items():
+            if region == "GLOBAL":
+                # Global score uses overall TV popularity
+                region_scores["GLOBAL"] += tv_popularity
+                region_release_counts["GLOBAL"] += 1
+                continue
+                
+            # Check if TV show was available in any of the region's countries
+            available_in_region = False
+            for country in info["countries"]:
+                if country in availability_data:
+                    available_in_region = True
+                    break
+            
+            if available_in_region:
+                region_scores[region] += tv_popularity
+                region_release_counts[region] += 1
+    
+    # Calculate average popularity scores per region
+    avg_scores = {}
+    for region in REGIONS.keys():
+        if region_release_counts[region] > 0:
+            avg_scores[region] = region_scores[region] / region_release_counts[region]
+        else:
+            avg_scores[region] = 0
+    
+    # Determine regions where actor exceeds popularity threshold
+    qualified_regions = []
+    for region, info in REGIONS.items():
+        # For GLOBAL, need a higher threshold and also consider count of credits
+        if region == "GLOBAL":
+            if avg_scores[region] >= info["threshold"] and region_release_counts[region] >= 5:
+                qualified_regions.append(region)
+        # For other regions, meet threshold and have at least 3 releases there
+        elif avg_scores[region] >= info["threshold"] and region_release_counts[region] >= 3:
+            qualified_regions.append(region)
+    
+    # If no regions qualify, add region with highest score
+    if not qualified_regions and region_release_counts:
+        best_region = max(avg_scores.items(), key=lambda x: x[1])[0]
+        qualified_regions.append(best_region)
+    
+    # Always ensure actor is in at least one region
+    if not qualified_regions:
+        qualified_regions.append("OTHER")
+    
+    return qualified_regions
+
+def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
+    """Determine which regions an actor is popular in with tiered approach"""
+    # Calculate base regional scores
+    regional_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
+    
+    # Get overall popularity from TMDB
+    overall_popularity = actor_data.get("popularity", 0)
+    
+    # Global tier assignments based on overall popularity
+    if overall_popularity >= 25:  # Mega stars
+        if "GLOBAL" not in regional_scores:
+            regional_scores.append("GLOBAL")
+    
+    # Franchise analysis - actors in major franchises get wider recognition
+    us_franchise_keywords = ["Marvel", "Star Wars", "Harry Potter", "Mission", 
+                            "Fast & Furious", "Jurassic", "Batman", "Superman"]
+    
+    mcu_credits = sum(1 for m in movie_credits if m.get("is_mcu", False))
+    franchise_count = mcu_credits
+    
+    # Check for other franchises
+    for movie in movie_credits:
+        title = movie.get("title", "")
+        for keyword in us_franchise_keywords:
+            if keyword in title:
+                franchise_count += 1
+                break
+    
+    # If they're in multiple franchises, add key regions
+    if franchise_count >= 2:
+        if "US" not in regional_scores:
+            regional_scores.append("US")
+        if "UK" not in regional_scores:
+            regional_scores.append("UK")
+    
+    # Special case for actors in Asian entertainment industries
+    asian_keywords = ["K-drama", "C-drama", "Bollywood", "anime", "manga"]
+    asian_content = False
+    
+    for tv in tv_credits:
+        tv_name = tv.get("name", "").lower()
+        for keyword in asian_keywords:
+            if keyword.lower() in tv_name:
+                asian_content = True
+                break
+    
+    if asian_content and "ASIA" not in regional_scores:
+        regional_scores.append("ASIA")
+    
+    # Make sure actor is assigned to at least one region
+    if not regional_scores:
+        # Fallback to region with most credits
+        regional_scores.append("OTHER")
+    
+    return regional_scores
+
+def get_movie_release_data(movie_id):
+    """Get release data for a movie by country with caching"""
+    if movie_id in release_cache['movie']:
+        return release_cache['movie'][movie_id]
+    
+    countries = {}
+    release_url = f"{BASE_URL}/movie/{movie_id}/release_dates"
+    params = {"api_key": TMDB_API_KEY}
+    
+    data = make_api_request(release_url, params)
+    if data and "results" in data:
+        for result in data["results"]:
+            country_code = result.get("iso_3166_1")
+            if country_code:
+                countries[country_code] = True
+    
+    # Cache the result
+    release_cache['movie'][movie_id] = countries
+    
+    # Add delay to avoid rate limiting
+    time.sleep(0.25)
+    
+    return countries
+
+def get_tv_availability_data(tv_id):
+    """Get countries where a TV show was available with caching"""
+    if tv_id in release_cache['tv']:
+        return release_cache['tv'][tv_id]
+    
+    countries = {}
+    
+    # First try content ratings which includes country info
+    ratings_url = f"{BASE_URL}/tv/{tv_id}/content_ratings"
+    params = {"api_key": TMDB_API_KEY}
+    
+    data = make_api_request(ratings_url, params)
+    if data and "results" in data:
+        for result in data["results"]:
+            country_code = result.get("iso_3166_1")
+            if country_code:
+                countries[country_code] = True
+    
+    # If no countries found, try alternative data
+    if not countries:
+        # Check translated info as a proxy for availability
+        translations_url = f"{BASE_URL}/tv/{tv_id}/translations"
+        data = make_api_request(translations_url, params)
+        
+        if data and "translations" in data:
+            for translation in data["translations"]:
+                country = translation.get("iso_3166_1")
+                if country:
+                    countries[country] = True
+    
+    # Cache the result
+    release_cache['tv'][tv_id] = countries
+    
+    # Add delay to avoid rate limiting
+    time.sleep(0.25)
+    
+    return countries
+
 # Main data fetching loop
 for page in range(1, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
@@ -196,7 +400,6 @@ for page in range(1, TOTAL_PAGES + 1):
         details_data = make_api_request(ACTOR_DETAILS_URL_TEMPLATE.format(actor_id), details_params)
         
         place_of_birth = "Unknown"
-        known_regions = []
         
         if details_data:
             place_of_birth = details_data.get("place_of_birth", "Unknown")
@@ -208,19 +411,6 @@ for page in range(1, TOTAL_PAGES + 1):
             # Handle None values
             if place_of_birth is None:
                 place_of_birth = "Unknown"
-            
-            # Determine regions based on place of birth
-            for region_code, region_name in REGIONS.items():
-                if place_of_birth != "Unknown" and region_name in place_of_birth:
-                    known_regions.append(region_code)
-            
-            # If no specific region matched, mark as OTHER
-            if not known_regions and place_of_birth != "Unknown":
-                known_regions.append("OTHER")
-            
-            # If popularity is above threshold, mark as globally recognized
-            if popularity >= GLOBAL_POPULARITY_THRESHOLD:
-                known_regions.append("GLOBAL")
         
         # Step 2: Get movie credits
         credits_params = {"api_key": TMDB_API_KEY}
@@ -322,8 +512,18 @@ for page in range(1, TOTAL_PAGES + 1):
                     if tv_id not in mcu_cache['tv']:
                         time.sleep(0.25)  # 250ms between new TV lookups
         
+        # Calculate regional popularity
+        actor_regions = assign_actor_to_regions(
+            {"id": actor_id, "name": actor_name, "popularity": popularity},
+            movie_credits,
+            tv_credits
+        )
+        
+        # Log region assignments for debugging
+        print(f"Assigned {actor_name} to regions: {', '.join(actor_regions)}")
+        
         # Insert data into appropriate region databases
-        for region in known_regions:
+        for region in actor_regions:
             if region not in databases:
                 continue
                 
@@ -347,11 +547,10 @@ for page in range(1, TOTAL_PAGES + 1):
             ''')
             
             # Insert region data for this actor
-            for r in known_regions:
-                cursor.execute(f'''
-                INSERT OR REPLACE INTO actor_regions (actor_id, region)
-                VALUES ({actor_id}, '{r}')
-                ''')
+            cursor.execute(f"""
+            INSERT OR REPLACE INTO actor_regions (actor_id, region)
+            VALUES ({actor_id}, '{region}')
+            """)
             
             # Insert movie credits (with is_mcu flag)
             for movie in movie_credits:
