@@ -24,10 +24,23 @@ DIFFICULTY_CONFIG = {
 def load_actor_data(region):
     """Load actor data from SQLite database for a specific region"""
     print(f"Loading actor data for {region}...")
-    db_path = f"public/actors_{region}.db"
     
-    if not os.path.exists(db_path):
-        print(f"Database for {region} not found")
+    # Look in multiple possible locations
+    possible_paths = [
+        f"public/actors_{region}.db",
+        f"actor-game/public/actors_{region}.db",
+        f"./actors_{region}.db"
+    ]
+    
+    db_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            db_path = path
+            print(f"Found database at {path}")
+            break
+    
+    if not db_path:
+        print(f"Database for {region} not found in any location")
         return None
     
     conn = sqlite3.connect(db_path)

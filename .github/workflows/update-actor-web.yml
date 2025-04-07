@@ -25,11 +25,46 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy pandas networkx tqdm sqlite3 firebase-admin
+          pip install numpy pandas networkx tqdm
+          # sqlite3 is part of the Python standard library - no need to install
+      
+      - name: List directories
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Files in current directory:"
+          ls -la
+          echo "Files in actor-game/public (if exists):"
+          ls -la actor-game/public || echo "Directory not found"
+          echo "Files in public (if exists):"
+          ls -la public || echo "Directory not found"
+      
+      - name: Ensure public directory exists
+        run: mkdir -p public
+      
+      - name: Check for actor databases
+        run: |
+          # Find all actor database files
+          find . -name "actors_*.db" -type f -print
+      
+      - name: Copy actor databases if needed
+        run: |
+          # Copy databases to public folder if they exist elsewhere
+          if [ ! -f "public/actors_GLOBAL.db" ]; then
+            find . -name "actors_GLOBAL.db" -type f -exec cp {} public/ \; || echo "Global DB not found"
+          fi
           
+          if [ ! -f "public/actors_US.db" ]; then
+            find . -name "actors_US.db" -type f -exec cp {} public/ \; || echo "US DB not found"
+          fi
+          
+          if [ ! -f "public/actors_UK.db" ]; then
+            find . -name "actors_UK.db" -type f -exec cp {} public/ \; || echo "UK DB not found"
+          fi
+      
       - name: Build actor connection map
         run: python build_actor_map.py
-        
+      
       - name: Commit and push updated connection database
         run: |
           git config --global user.name 'GitHub Actions'
