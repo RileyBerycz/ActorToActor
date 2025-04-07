@@ -5,41 +5,11 @@ import time
 import sqlite3
 import random
 from requests.exceptions import ConnectionError, Timeout, RequestException
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
 
 # Retrieve your TMDB API key from environment variables
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 if not TMDB_API_KEY:
     raise Exception("TMDB_API_KEY not set in environment variables.")
-
-# Initialize Firebase (using service account from GitHub secrets)
-firebase_key_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-if firebase_key_json:
-    # Parse JSON string from environment variable
-    firebase_key_dict = json.loads(firebase_key_json)
-    
-    # Initialize with the parsed credentials
-    cred = credentials.Certificate(firebase_key_dict)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase initialized successfully")
-else:
-    print("FIREBASE_SERVICE_ACCOUNT not set, skipping Firebase upload")
-    db = None
-
-# Firebase operation counters for free tier limits
-firebase_writes = 0
-firebase_reads = 0
-FIREBASE_DAILY_WRITE_LIMIT = 18000  # Set below the 20k limit to be safe
-FIREBASE_DAILY_READ_LIMIT = 45000   # Set below the 50k limit to be safe
-
-# Flag to enable/disable Firebase upload (can be controlled via command line)
-ENABLE_FIREBASE = os.environ.get("ENABLE_FIREBASE", "true").lower() == "true"
-if not ENABLE_FIREBASE:
-    print("Firebase upload disabled via environment variable")
-    db = None
 
 # Constants
 BASE_URL = "https://api.themoviedb.org/3"
@@ -106,177 +76,6 @@ def make_api_request(url, params, max_retries=5):
     
     print(f"Failed after {max_retries} retries. Skipping this request.")
     return None
-
-# Function to upload actor data to Firebase
-def upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, regions):
-    """Upload actor data to Firebase Firestore with existence checks and batching"""
-    global firebase_writes, firebase_reads, db  # Add db here at the beginning
-    
-    if db is None or firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
-        return  # Skip if Firebase not initialized or approaching limits
-    
-    try:
-        # Create a batch for efficient writes
-        batch = db.batch()
-        actor_id_str = str(actor_id)
-        writes_in_batch = 0
-        
-        # Check if actor already exists first
-        actor_ref = db.collection('actors').document(actor_id_str)
-        actor_doc = actor_ref.get()
-        firebase_reads += 1
-        
-        if firebase_reads >= FIREBASE_DAILY_READ_LIMIT:
-            print(f"Approaching Firebase read limit ({firebase_reads}), stopping Firebase operations")
-            return
-        
-        actor_exists = actor_doc.exists
-        actor_data_changed = False
-        
-        if actor_exists:
-            existing_data = actor_doc.to_dict()
-            # Check if data needs updating (compare fields)
-            if (existing_data.get('name') != actor_data.get('name', '') or
-                existing_data.get('popularity') != actor_data.get('popularity', 0) or
-                existing_data.get('profile_path') != actor_data.get('profile_path', '') or
-                existing_data.get('place_of_birth') != actor_data.get('place_of_birth', 'Unknown') or
-                set(existing_data.get('regions', [])) != set(regions)):
-                actor_data_changed = True
-        
-        # Only update actor if it doesn't exist or data changed
-        if not actor_exists or actor_data_changed:
-            batch.set(actor_ref, {
-                'name': actor_data.get('name', ''),
-                'popularity': actor_data.get('popularity', 0),
-                'profile_path': actor_data.get('profile_path', ''),
-                'place_of_birth': actor_data.get('place_of_birth', 'Unknown'),
-                'regions': regions
-            })
-            writes_in_batch += 1
-        
-        # Handle movie credits - use a separate batch to avoid exceeding batch size limits
-        if len(movie_credits) > 0:
-            movie_batch = db.batch()
-            movie_writes = 0
-            
-            # Get existing movie credits to avoid unnecessary writes
-            if actor_exists:
-                movie_refs_snapshot = actor_ref.collection('movie_credits').limit(500).get()
-                firebase_reads += 1
-                
-                # Create a map of existing movies for quick lookup
-                existing_movies = {doc.id: doc.to_dict() for doc in movie_refs_snapshot}
-            else:
-                existing_movies = {}
-            
-            for movie in movie_credits:
-                movie_id_str = str(movie['id'])
-                movie_ref = actor_ref.collection('movie_credits').document(movie_id_str)
-                
-                # Check if movie credit exists and needs updating
-                if movie_id_str in existing_movies:
-                    existing = existing_movies[movie_id_str]
-                    if (existing.get('title') == movie.get('title', '') and
-                        existing.get('character') == movie.get('character', '') and
-                        existing.get('popularity') == movie.get('popularity', 0) and
-                        existing.get('release_date') == movie.get('release_date', '') and
-                        existing.get('poster_path') == movie.get('poster_path', '') and
-                        existing.get('is_mcu') == movie.get('is_mcu', False)):
-                        continue  # Skip if no changes
-                
-                movie_batch.set(movie_ref, {
-                    'title': movie.get('title', ''),
-                    'character': movie.get('character', ''),
-                    'popularity': movie.get('popularity', 0),
-                    'release_date': movie.get('release_date', ''),
-                    'poster_path': movie.get('poster_path', ''),
-                    'is_mcu': movie.get('is_mcu', False)
-                })
-                movie_writes += 1
-                
-                # Commit batch if getting large and create a new one
-                if movie_writes >= 400:  # Firestore batch limit is 500
-                    movie_batch.commit()
-                    firebase_writes += movie_writes
-                    if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
-                        print(f"Approaching Firebase write limit ({firebase_writes}), stopping Firebase operations")
-                        return
-                    movie_batch = db.batch()
-                    movie_writes = 0
-            
-            # Commit any remaining movie writes
-            if movie_writes > 0:
-                movie_batch.commit()
-                firebase_writes += movie_writes
-        
-        # Handle TV credits - similar approach as movies
-        if len(tv_credits) > 0:
-            tv_batch = db.batch()
-            tv_writes = 0
-            
-            # Get existing TV credits
-            if actor_exists:
-                tv_refs_snapshot = actor_ref.collection('tv_credits').limit(500).get()
-                firebase_reads += 1
-                existing_tv = {doc.id: doc.to_dict() for doc in tv_refs_snapshot}
-            else:
-                existing_tv = {}
-            
-            for tv in tv_credits:
-                tv_id_str = str(tv['id'])
-                tv_ref = actor_ref.collection('tv_credits').document(tv_id_str)
-                
-                # Check if TV credit exists and needs updating
-                if tv_id_str in existing_tv:
-                    existing = existing_tv[tv_id_str]
-                    if (existing.get('name') == tv.get('name', '') and
-                        existing.get('character') == tv.get('character', '') and
-                        existing.get('popularity') == tv.get('popularity', 0) and
-                        existing.get('first_air_date') == tv.get('first_air_date', '') and
-                        existing.get('poster_path') == tv.get('poster_path', '') and
-                        existing.get('is_mcu') == tv.get('is_mcu', False)):
-                        continue  # Skip if no changes
-                
-                tv_batch.set(tv_ref, {
-                    'name': tv.get('name', ''),
-                    'character': tv.get('character', ''),
-                    'popularity': tv.get('popularity', 0),
-                    'first_air_date': tv.get('first_air_date', ''),
-                    'poster_path': tv.get('poster_path', ''),
-                    'is_mcu': tv.get('is_mcu', False)
-                })
-                tv_writes += 1
-                
-                # Commit batch if getting large
-                if tv_writes >= 400:
-                    tv_batch.commit()
-                    firebase_writes += tv_writes
-                    if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
-                        print(f"Approaching Firebase write limit ({firebase_writes}), stopping Firebase operations")
-                        return
-                    tv_batch = db.batch()
-                    tv_writes = 0
-            
-            # Commit any remaining TV writes
-            if tv_writes > 0:
-                tv_batch.commit()
-                firebase_writes += tv_writes
-        
-        # Commit the main actor batch if it has any operations
-        if writes_in_batch > 0:
-            batch.commit()
-            firebase_writes += writes_in_batch
-        
-        # Print status update with operation counts
-        print(f"Firebase: Actor {actor_id} ({actor_data.get('name')}) processed. Total ops: {firebase_reads} reads, {firebase_writes} writes")
-        
-        # Check if we're approaching limits
-        if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT or firebase_reads >= FIREBASE_DAILY_READ_LIMIT:
-            print(f"Approaching Firebase limits (writes: {firebase_writes}, reads: {firebase_reads}), stopping Firebase operations")
-            db = None  # Disable further Firebase operations
-            
-    except Exception as e:
-        print(f"Error uploading actor {actor_id} to Firebase: {e}")
 
 # Database setup function
 def setup_database(region):
@@ -361,26 +160,8 @@ mcu_cache = {
     'tv': {}      # tv_id -> is_mcu
 }
 
-# Track progress for resuming on future runs
-progress_file = "firebase_progress.json"
-last_processed_page = 1
-last_processed_actor = None
-
-# Load progress if available
-if os.path.exists(progress_file) and ENABLE_FIREBASE:
-    try:
-        with open(progress_file, "r") as f:
-            progress = json.load(f)
-            last_processed_page = progress.get("page", 1)
-            last_processed_actor = progress.get("actor_id")
-            firebase_writes = progress.get("writes", 0)
-            firebase_reads = progress.get("reads", 0)
-            print(f"Resuming Firebase upload from page {last_processed_page}, actor {last_processed_actor}")
-    except Exception as e:
-        print(f"Error loading progress: {e}")
-
 # Main data fetching loop
-for page in range(last_processed_page, TOTAL_PAGES + 1):
+for page in range(1, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
     
     # Get page of popular actors
@@ -541,17 +322,6 @@ for page in range(last_processed_page, TOTAL_PAGES + 1):
                     if tv_id not in mcu_cache['tv']:
                         time.sleep(0.25)  # 250ms between new TV lookups
         
-        # Create actor data object for Firebase
-        actor_data = {
-            "name": actor_name,
-            "popularity": popularity,
-            "profile_path": profile_path,
-            "place_of_birth": place_of_birth
-        }
-        
-        # Upload to Firebase (if enabled)
-        upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, known_regions)
-            
         # Insert data into appropriate region databases
         for region in known_regions:
             if region not in databases:
@@ -563,7 +333,7 @@ for page in range(last_processed_page, TOTAL_PAGES + 1):
             safe_name = actor_name.replace("'", "''")
             safe_place = place_of_birth.replace("'", "''") if place_of_birth else "Unknown"
             
-            # Insert actor data (no is_mcu flag here anymore)
+            # Insert actor data
             cursor.execute(f'''
             INSERT OR REPLACE INTO actors 
             (id, name, popularity, profile_path, place_of_birth)
@@ -625,16 +395,6 @@ for page in range(last_processed_page, TOTAL_PAGES + 1):
             
             conn.commit()
         
-        # Save progress information
-        if ENABLE_FIREBASE:
-            with open(progress_file, "w") as f:
-                json.dump({
-                    "page": page,
-                    "actor_id": actor_id,
-                    "writes": firebase_writes,
-                    "reads": firebase_reads
-                }, f)
-        
         # Delay between actors
         time.sleep(0.5)
     
@@ -658,36 +418,14 @@ for region, (conn, cursor) in databases.items():
     
     print(f"Database for region {region} saved successfully")
 
-# Clean up progress file if everything completed successfully
-if os.path.exists(progress_file) and ENABLE_FIREBASE:
-    try:
-        os.remove(progress_file)
-        print("Firebase upload completed successfully, removed progress file")
-    except Exception as e:
-        print(f"Warning: Could not remove progress file: {e}")
-
-# Summary of operations
-if ENABLE_FIREBASE and db is not None:
-    print(f"""
-Firebase Upload Summary:
------------------------
-Total reads:  {firebase_reads} (daily limit: {FIREBASE_DAILY_READ_LIMIT})
-Total writes: {firebase_writes} (daily limit: {FIREBASE_DAILY_WRITE_LIMIT})
-Status: {'Completed' if firebase_writes < FIREBASE_DAILY_WRITE_LIMIT and firebase_reads < FIREBASE_DAILY_READ_LIMIT else 'Partial (reached limits)'}
-""")
-
-print("""
-All data successfully updated:
-- SQLite databases saved to GitHub repository (as backup)
-- Data uploaded to Firebase (for production use)
-""")
-
-# Add a flag file to indicate which source is most up-to-date
+# Add a flag file to indicate data status
 with open("actor-game/public/data_source_info.json", "w") as f:
     json.dump({
         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "sqlite_complete": True,
-        "firebase_complete": ENABLE_FIREBASE and db is not None and firebase_writes < FIREBASE_DAILY_WRITE_LIMIT,
-        "firebase_writes": firebase_writes,
-        "firebase_reads": firebase_reads
     }, f)
+
+print("""
+All data successfully updated:
+- SQLite databases saved to GitHub repository
+""")
