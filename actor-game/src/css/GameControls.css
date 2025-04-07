@@ -60,3 +60,56 @@
   font-size: 14px;
   font-weight: 500;
 }
+
+.search-container {
+  margin: 20px auto;
+  max-width: 600px;
+}
+
+.search-instructions {
+  margin-bottom: 10px;
+  font-weight: bold;
+  color: #444;
+}
+
+.search-input {
+  width: 100%;
+  padding: 12px 15px;
+  font-size: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  margin-bottom: 10px;
+}
+
+.search-results {
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  padding: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+}
+
+.search-result-item:hover {
+  background-color: #f5f5f5;
+}
+
+.search-result-img {
+  width: 50px;
+  height: 75px;
+  object-fit: cover;
+  margin-right: 10px;
+  border-radius: 4px;
+}
+
+.search-result-name {
+  font-weight: bold;
+}

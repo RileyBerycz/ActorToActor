@@ -1,16 +1,61 @@
 import './App.css';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ActorGame from './components/ActorGame';
 import ExamplePath from './components/ExamplePath';
 
 function App() {
   const [gameSettings, setGameSettings] = useState({
-    region: 'GLOBAL',
+    region: 'GLOBAL', // Default, will be updated based on location
     difficulty: 'normal',
     excludeMcu: false
   });
   
   const [gameStarted, setGameStarted] = useState(false);
+  
+  // Detect user's region on app load
+  useEffect(() => {
+    async function detectUserRegion() {
+      try {
+        // Use a free IP geolocation API
+        const response = await fetch('https://ipapi.co/json/');
+        const data = await response.json();
+        
+        // Log what we're getting back for debugging
+        console.log("API returned country code:", data.country_code);
+        
+        // Map country code to your regions with GB → UK conversion
+        let countryCode = data.country_code;
+        
+        // Special handling for UK (which comes as GB)
+        if (countryCode === 'GB') {
+          countryCode = 'UK';
+        }
+        
+        let detectedRegion = 'OTHER';
+        
+        // Check against your available regions
+        const availableRegions = ['US', 'UK', 'CA', 'AU', 'KR', 'CN', 'JP', 'IN', 'FR', 'DE'];
+        
+        if (availableRegions.includes(countryCode)) {
+          detectedRegion = countryCode;
+        }
+        
+        console.log("Setting region to:", detectedRegion);
+        
+        // Update the game settings with detected region
+        setGameSettings(prev => ({
+          ...prev,
+          region: detectedRegion
+        }));
+        
+      } catch (error) {
+        console.error("Error detecting region:", error);
+        // Keep default region on error
+      }
+    }
+    
+    detectUserRegion();
+  }, []);
   
   return (
     <div className="App">
@@ -19,7 +64,6 @@ function App() {
         <p>Connect actors through a chain of shared movie and TV appearances</p>
       </header>
       
-        
       {/* Settings panel - always visible */}
       <div className="settings-panel">
         <label className="region-selector">

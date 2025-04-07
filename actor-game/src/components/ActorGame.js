@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import initSqlJs from 'sql.js';
 import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 import GameControls from './GameControls';
@@ -10,9 +10,10 @@ function ActorGame({ settings, onReset }) {
   const [actorData, setActorData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadingMessage, setLoadingMessage] = useState("Loading actors...");
   const [error, setError] = useState(null);
   const [path, setPath] = useState([]);
-  const [gamePhase, setGamePhase] = useState('initializing'); // 'initializing', 'playing', 'completed'
+  const [gamePhase, setGamePhase] = useState('initializing');
   const [targetActor, setTargetActor] = useState(null);
   const [startActor, setStartActor] = useState(null);
   const [hintAvailable, setHintAvailable] = useState(false);
@@ -21,99 +22,368 @@ function ActorGame({ settings, onReset }) {
   const [showOptimalPath, setShowOptimalPath] = useState(false);
   const [hintTimer, setHintTimer] = useState(null);
 
-  // TMDB API constants
   const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
   const PROFILE_SIZE = "w185";
   const POSTER_SIZE = "w342";
+  
+  const selectActorsRef = useRef(null);
 
   const calculateOptimalPath = useCallback((startId, targetId) => {
-    if (!actorData) return;
+    if (!actorData) return [];
     
     const queue = [];
     const visited = new Set();
     const previous = new Map();
     
+    // Add max depth limit based on difficulty
+    let maxDepth;
+    switch(settings.difficulty) {
+      case 'easy': maxDepth = 8; break;  // Up to 4 actor connections
+      case 'normal': maxDepth = 12; break; // Up to 6 actor connections
+      case 'hard': maxDepth = 20; break;   // Up to 10 actor connections
+      default: maxDepth = 20;
+    }
+    
     queue.push({
       id: startId,
       type: 'actor',
-      steps: 0
+      steps: 0,
+      depth: 0
     });
     visited.add(`actor-${startId}`);
     
     while (queue.length > 0) {
       const current = queue.shift();
       
+      // Check for target
       if (current.type === 'actor' && current.id === targetId) {
-        const optimalPathResult = [];
-        let currentNode = current;
+        const path = [];
+        let node = current;
         
-        while (currentNode) {
-          optimalPathResult.unshift(currentNode);
-          currentNode = previous.get(`${currentNode.type}-${currentNode.id}`);
+        while (node) {
+          path.unshift(node);
+          node = previous.get(`${node.type}-${node.id}`);
         }
         
-        setOptimalPath(optimalPathResult);
-        return;
+        return path;
       }
+      
+      // Skip if we've reached max depth
+      if (current.depth >= maxDepth) continue;
       
       if (current.type === 'actor') {
         const actor = actorData[current.id];
+        if (!actor) continue;
         
         const credits = [
           ...actor.movie_credits,
           ...(settings.difficulty === 'hard' ? actor.tv_credits : [])
         ];
         
-        const filteredCredits = settings.excludeMcu
-          ? credits.filter(credit => !credit.is_mcu)
-          : credits;
+        const filteredCredits = settings.excludeMcu ? 
+          credits.filter(c => !c.is_mcu) : credits;
         
-        for (const credit of filteredCredits) {
+        // Prioritize popular movies to find better paths
+        const sortedCredits = [...filteredCredits].sort((a, b) => b.popularity - a.popularity);
+        
+        for (const credit of sortedCredits.slice(0, 15)) { // Limit to 15 most popular movies
           const creditId = `movie-${credit.id}`;
           if (!visited.has(creditId)) {
-            queue.push({
+            const nextNode = {
               id: credit.id,
               type: 'movie',
               title: credit.title || credit.name,
               poster_path: credit.poster_path,
-              steps: current.steps + 1
-            });
+              steps: current.steps + 1,
+              depth: current.depth + 1
+            };
+            
+            queue.push(nextNode);
             visited.add(creditId);
             previous.set(creditId, current);
           }
         }
-      } else if (current.type === 'movie') {
-        for (const actorId in actorData) {
-          const actor = actorData[actorId];
-          
-          const wasInMovie = actor.movie_credits.some(credit => credit.id === current.id) ||
-            (settings.difficulty === 'hard' ? 
-              actor.tv_credits.some(credit => credit.id === current.id) : false);
-          
-          if (wasInMovie) {
-            const actorNodeId = `actor-${actorId}`;
-            if (!visited.has(actorNodeId)) {
-              queue.push({
-                id: actorId,
-                type: 'actor',
-                name: actor.name,
-                profile_path: actor.profile_path,
-                steps: current.steps + 1
-              });
-              visited.add(actorNodeId);
-              previous.set(actorNodeId, current);
-            }
+      } else {
+        // Sample actors to avoid checking too many
+        const relevantActors = Object.entries(actorData)
+          .filter(([actorId, actor]) => {
+            return actor.movie_credits.some(c => c.id === current.id) ||
+              (settings.difficulty === 'hard' ? 
+                actor.tv_credits.some(c => c.id === current.id) : false);
+          })
+          .sort(() => 0.5 - Math.random()) // Randomize
+          .slice(0, 20); // Limit to 20 actors per movie
+        
+        for (const [actorId, actor] of relevantActors) {
+          const actorNodeId = `actor-${actorId}`;
+          if (!visited.has(actorNodeId)) {
+            const nextNode = {
+              id: actorId,
+              type: 'actor',
+              name: actor.name,
+              profile_path: actor.profile_path,
+              steps: current.steps + 1,
+              depth: current.depth + 1
+            };
+            
+            queue.push(nextNode);
+            visited.add(actorNodeId);
+            previous.set(actorNodeId, current);
           }
         }
       }
     }
     
-    setOptimalPath([]);
+    return [];
   }, [actorData, settings]);
+
+  const selectActorsWithValidPath = useCallback(() => {
+    if (!actorData) return;
+    
+    setLoadingMessage("Finding actors for your game...");
+    
+    // Filter actors with profile images for better UI
+    const filteredActors = Object.entries(actorData)
+      .filter(([_, actor]) => actor.profile_path)
+      .map(([id, actor]) => ({
+        id,
+        ...actor
+      }));
+    
+    // Sort by popularity for better start/target selection
+    const sortedActors = [...filteredActors].sort((a, b) => b.popularity - a.popularity);
+    
+    if (sortedActors.length < 50) {
+      setError("Not enough actors available. Try a different region.");
+      return;
+    }
+    
+    // Define path length targets based on difficulty
+    // These are actor-to-actor connections (each connection is actor-movie-actor)
+    const pathLengthRanges = {
+      'easy': [1, 3],     // 1-3 actor connections
+      'normal': [3, 5],   // 3-5 actor connections
+      'hard': [5, 8]      // 5-8 actor connections
+    };
+    
+    const [minConnections, maxConnections] = pathLengthRanges[settings.difficulty] || [1, 8];
+    
+    // Top 10% for start actor (always well-known)
+    const topActors = sortedActors.slice(0, Math.max(5, Math.floor(sortedActors.length * 0.1)));
+    
+    // Sample multiple start actors to try
+    const startActorCandidates = sampleActors(topActors, 5);
+    
+    // Initialize variables to track our best match
+    let bestStartActor = null;
+    let bestTargetActor = null;
+    let bestPath = null;
+    let attempts = 0;
+    const maxAttempts = 100;
+    
+    // Function to sample actors from a pool
+    function sampleActors(actorPool, count) {
+      const shuffled = [...actorPool].sort(() => 0.5 - Math.random());
+      return shuffled.slice(0, Math.min(count, actorPool.length));
+    }
+    
+    // For each potential start actor
+    for (const startActor of startActorCandidates) {
+      setLoadingMessage(`Testing ${startActor.name} as start actor...`);
+      
+      // Select target actor pool based on difficulty
+      let targetPool;
+      const totalCount = sortedActors.length;
+      
+      switch(settings.difficulty) {
+        case 'easy':
+          // Well-known actors (top 30%) for easy mode
+          targetPool = sortedActors.slice(0, Math.floor(totalCount * 0.3));
+          break;
+        case 'normal':
+          // Medium popularity (15%-60%) for normal mode
+          targetPool = sortedActors.slice(
+            Math.floor(totalCount * 0.15),
+            Math.floor(totalCount * 0.6)
+          );
+          break;
+        case 'hard':
+          // Less known actors (40%-100%) for hard mode
+          targetPool = sortedActors.slice(Math.floor(totalCount * 0.4));
+          break;
+        default:
+          targetPool = sortedActors;
+      }
+      
+      // Remove the start actor from potential targets
+      targetPool = targetPool.filter(actor => actor.id !== startActor.id);
+      
+      // Sample a subset of target actors to try (for efficiency)
+      const targetCandidates = sampleActors(targetPool, 10);
+      
+      // Try each target actor
+      for (const targetActor of targetCandidates) {
+        attempts++;
+        if (attempts > maxAttempts) break;
+        
+        setLoadingMessage(`Testing connection: ${startActor.name} → ${targetActor.name}`);
+        setLoadingProgress(Math.min(90, 50 + Math.floor((attempts / maxAttempts) * 40)));
+        
+        // Calculate path between these actors
+        const path = calculateOptimalPath(startActor.id, targetActor.id);
+        
+        // If path exists
+        if (path.length > 0) {
+          // Count actual connections (every 2 steps is one actor-to-actor connection)
+          const connectionCount = Math.floor(path.length / 2);
+          
+          console.log(`Found path from ${startActor.name} to ${targetActor.name} with ${connectionCount} connections`);
+          
+          // Check if this path matches our difficulty criteria
+          if (connectionCount >= minConnections && connectionCount <= maxConnections) {
+            // Perfect match for our difficulty!
+            bestStartActor = startActor;
+            bestTargetActor = targetActor;
+            bestPath = path;
+            
+            // Early exit - we found what we wanted
+            setLoadingMessage(`Found perfect match: ${startActor.name} → ${targetActor.name} (${connectionCount} connections)`);
+            break;
+          }
+          
+          // If we haven't found a path yet, or this path is better for our difficulty,
+          // update our best candidates
+          if (!bestPath || (connectionCount >= minConnections && connectionCount <= maxConnections)) {
+            bestStartActor = startActor;
+            bestTargetActor = targetActor;
+            bestPath = path;
+          }
+        }
+      }
+      
+      // If we already found a perfect match, stop trying
+      if (bestPath && Math.floor(bestPath.length / 2) >= minConnections && Math.floor(bestPath.length / 2) <= maxConnections) {
+        break;
+      }
+    }
+    
+    // If we found any valid path, use it
+    if (bestPath && bestPath.length > 0) {
+      const connectionCount = Math.floor(bestPath.length / 2);
+      setLoadingMessage(`Ready to play! Found a ${connectionCount}-connection path.`);
+      setStartActor(bestStartActor);
+      setTargetActor(bestTargetActor);
+      setOptimalPath(bestPath);
+      setLoadingProgress(100);
+      
+      setTimeout(() => {
+        setGamePhase('playing');
+        setLoading(false);
+      }, 500);
+      return;
+    }
+    
+    // If we got here, we couldn't find a suitable path
+    setError("Couldn't find a valid actor pairing. Try changing settings or regions.");
+  }, [actorData, calculateOptimalPath, settings]);
+
+  useEffect(() => {
+    selectActorsRef.current = selectActorsWithValidPath;
+  }, [selectActorsWithValidPath]);
+
+  const generateHint = useCallback(() => {
+    if (!optimalPath || path.length === 0) return null;
+    
+    const lastItem = path[path.length - 1];
+    
+    const currentOptimalIndex = optimalPath.findIndex(
+      item => item.type === lastItem.type && item.id === lastItem.id
+    );
+    
+    if (currentOptimalIndex >= 0 && currentOptimalIndex < optimalPath.length - 1) {
+      const nextStep = optimalPath[currentOptimalIndex + 1];
+      return {
+        message: `Consider looking for a ${nextStep.type === 'actor' ? 'person' : 'movie/show'} that starts with "${nextStep.type === 'actor' ? nextStep.name.charAt(0) : nextStep.title.charAt(0)}"`,
+        type: nextStep.type
+      };
+    } else {
+      return {
+        message: "You might be on a longer path. Try exploring other connections.",
+        type: "general"
+      };
+    }
+  }, [optimalPath, path]);
+
+  const showHint = useCallback(() => {
+    const newHint = generateHint();
+    setHint(newHint);
+    
+    if (hintTimer) clearTimeout(hintTimer);
+    setHintAvailable(false);
+    
+    const timer = setTimeout(() => {
+      setHintAvailable(true);
+    }, 120000);
+    
+    setHintTimer(timer);
+  }, [generateHint, hintTimer]);
+  
+  const handleSelection = useCallback((selection) => {
+    setPath(prev => [...prev, selection]);
+    
+    if (selection.type === 'actor' && selection.id === targetActor?.id) {
+      setGamePhase('completed');
+    }
+  }, [targetActor]);
+
+  useEffect(() => {
+    if (actorData && !loading && !startActor && gamePhase === 'initializing' && selectActorsRef.current) {
+      selectActorsRef.current();
+    }
+  }, [actorData, loading, startActor, gamePhase]);
+
+  useEffect(() => {
+    if (startActor && targetActor && actorData) {
+      setHint(null);
+      setHintAvailable(false);
+      
+      if (hintTimer) {
+        clearTimeout(hintTimer);
+      }
+      
+      const timer = setTimeout(() => {
+        setHintAvailable(true);
+      }, 120000);
+      
+      setHintTimer(timer);
+    }
+    
+    return () => {
+      if (hintTimer) {
+        clearTimeout(hintTimer);
+      }
+    };
+  }, [startActor, targetActor, actorData, hintTimer]);
+
+  useEffect(() => {
+    if (path.length > 0) {
+      if (hintTimer) {
+        clearTimeout(hintTimer);
+        setHint(null);
+        
+        const timer = setTimeout(() => {
+          setHintAvailable(true);
+        }, 120000);
+        
+        setHintTimer(timer);
+      }
+    }
+  }, [path, hintTimer]);
 
   useEffect(() => {
     async function loadFromFirebase() {
       try {
+        setLoadingMessage("Loading data from Firebase...");
         const actorsRef = collection(firebaseDb, "actors");
         const q = query(
           actorsRef, 
@@ -132,6 +402,8 @@ function ActorGame({ settings, onReset }) {
         const actors = {};
         let processedCount = 0;
         const totalActors = actorSnapshot.size;
+        
+        setLoadingMessage(`Loading ${totalActors} actors from Firebase...`);
         
         for (const doc of actorSnapshot.docs) {
           const data = doc.data();
@@ -288,144 +560,6 @@ function ActorGame({ settings, onReset }) {
     loadActorData();
   }, [settings.region]);
 
-  useEffect(() => {
-    if (actorData && !loading && !startActor) {
-      // Filter actors with profile images (better UI)
-      const filteredActors = Object.entries(actorData)
-        .filter(([_, actor]) => actor.profile_path)
-        .map(([id, actor]) => ({
-          id,
-          ...actor
-        }));
-      
-      // Sort by popularity
-      const sortedActors = [...filteredActors].sort((a, b) => b.popularity - a.popularity);
-      
-      // Get top 10% for start actor (always well-known)
-      const topActors = sortedActors.slice(0, Math.floor(sortedActors.length * 0.1));
-      const startIndex = Math.floor(Math.random() * topActors.length);
-      const newStartActor = topActors[startIndex];
-      
-      // Select target actor based on difficulty
-      let targetActorPool;
-      switch(settings.difficulty) {
-        case 'easy':
-          // Well-known actors (top 20%)
-          targetActorPool = sortedActors.slice(0, Math.floor(sortedActors.length * 0.2));
-          break;
-        case 'normal':
-          // Medium popularity (20%-50%)
-          targetActorPool = sortedActors.slice(
-            Math.floor(sortedActors.length * 0.2),
-            Math.floor(sortedActors.length * 0.5)
-          );
-          break;
-        case 'hard':
-          // Less known actors (50%-100%)
-          targetActorPool = sortedActors.slice(Math.floor(sortedActors.length * 0.5));
-          break;
-        default:
-          targetActorPool = sortedActors;
-      }
-      
-      // Make sure we don't pick the same actor
-      targetActorPool = targetActorPool.filter(actor => actor.id !== newStartActor.id);
-      
-      // Select random target actor from appropriate pool
-      const targetIndex = Math.floor(Math.random() * targetActorPool.length);
-      const newTargetActor = targetActorPool[targetIndex];
-      
-      setStartActor(newStartActor);
-      setTargetActor(newTargetActor);
-      setGamePhase('playing');
-    }
-  }, [actorData, loading, settings.difficulty, startActor]);
-
-  useEffect(() => {
-    if (startActor && targetActor && actorData) {
-      setHint(null);
-      setHintAvailable(false);
-      
-      if (hintTimer) {
-        clearTimeout(hintTimer);
-      }
-      
-      const timer = setTimeout(() => {
-        setHintAvailable(true);
-      }, 120000);
-      
-      setHintTimer(timer);
-      
-      calculateOptimalPath(startActor.id, targetActor.id);
-    }
-    
-    return () => {
-      if (hintTimer) {
-        clearTimeout(hintTimer);
-      }
-    };
-  }, [startActor, targetActor, actorData, hintTimer, calculateOptimalPath]);
-
-  useEffect(() => {
-    if (path.length > 0) {
-      if (hintTimer) {
-        clearTimeout(hintTimer);
-        setHint(null);
-        
-        const timer = setTimeout(() => {
-          setHintAvailable(true);
-        }, 120000);
-        
-        setHintTimer(timer);
-      }
-    }
-  }, [path, hintTimer]);
-
-  const generateHint = () => {
-    if (!optimalPath || path.length === 0) return null;
-    
-    const lastItem = path[path.length - 1];
-    
-    const currentOptimalIndex = optimalPath.findIndex(
-      item => item.type === lastItem.type && item.id === lastItem.id
-    );
-    
-    if (currentOptimalIndex >= 0 && currentOptimalIndex < optimalPath.length - 1) {
-      const nextStep = optimalPath[currentOptimalIndex + 1];
-      return {
-        message: `Consider looking for a ${nextStep.type === 'actor' ? 'person' : 'movie/show'} that starts with "${nextStep.type === 'actor' ? nextStep.name.charAt(0) : nextStep.title.charAt(0)}"`,
-        type: nextStep.type
-      };
-    } else {
-      return {
-        message: "You might be on a longer path. Try exploring other connections.",
-        type: "general"
-      };
-    }
-  };
-
-  const showHint = () => {
-    const newHint = generateHint();
-    setHint(newHint);
-    
-    if (hintTimer) clearTimeout(hintTimer);
-    setHintAvailable(false);
-    
-    const timer = setTimeout(() => {
-      setHintAvailable(true);
-    }, 120000);
-    
-    setHintTimer(timer);
-  };
-
-  const handleSelection = (selection) => {
-    setPath([...path, selection]);
-    
-    if (selection.id === targetActor.id) {
-      setGamePhase('completed');
-    }
-  };
-
   if (loading) {
     return (
       <div className="loading-container">
@@ -435,7 +569,7 @@ function ActorGame({ settings, onReset }) {
             style={{ width: `${loadingProgress}%` }}
           ></div>
         </div>
-        <div className="loading-text">Loading actor data...</div>
+        <div className="loading-text">{loadingMessage}</div>
       </div>
     );
   }
@@ -450,10 +584,10 @@ function ActorGame({ settings, onReset }) {
         <div className="start-actor">
           <img 
             src={startActor?.profile_path ? `${BASE_IMG_URL}${PROFILE_SIZE}${startActor.profile_path}` : '/placeholder.png'} 
-            alt={startActor?.name} 
+            alt={startActor?.name || 'Starting Actor'} 
             className="actor-image"
           />
-          <div className="actor-name">{startActor?.name}</div>
+          <div className="actor-name">{startActor?.name || 'Loading...'}</div>
           <div className="actor-label">START</div>
         </div>
         
@@ -462,10 +596,10 @@ function ActorGame({ settings, onReset }) {
         <div className="target-actor">
           <img 
             src={targetActor?.profile_path ? `${BASE_IMG_URL}${PROFILE_SIZE}${targetActor.profile_path}` : '/placeholder.png'} 
-            alt={targetActor?.name} 
+            alt={targetActor?.name || 'Target Actor'} 
             className="actor-image"
           />
-          <div className="actor-name">{targetActor?.name}</div>
+          <div className="actor-name">{targetActor?.name || 'Loading...'}</div>
           <div className="actor-label">TARGET</div>
         </div>
       </div>
