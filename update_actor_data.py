@@ -110,7 +110,7 @@ def make_api_request(url, params, max_retries=5):
 # Function to upload actor data to Firebase
 def upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, regions):
     """Upload actor data to Firebase Firestore with existence checks and batching"""
-    global firebase_writes, firebase_reads
+    global firebase_writes, firebase_reads, db  # Add db here at the beginning
     
     if db is None or firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT:
         return  # Skip if Firebase not initialized or approaching limits
@@ -273,7 +273,6 @@ def upload_to_firebase(actor_id, actor_data, movie_credits, tv_credits, regions)
         # Check if we're approaching limits
         if firebase_writes >= FIREBASE_DAILY_WRITE_LIMIT or firebase_reads >= FIREBASE_DAILY_READ_LIMIT:
             print(f"Approaching Firebase limits (writes: {firebase_writes}, reads: {firebase_reads}), stopping Firebase operations")
-            global db
             db = None  # Disable further Firebase operations
             
     except Exception as e:
