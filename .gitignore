@@ -2,3 +2,8 @@
 actors_*.db
 public/actors_*.db
 actor-game/public/actors_*.db
+#Exclude locally run files
+force_github_databases_to_firestore.py
+database_combiner.py
+#Exclude firebase creds
+firebase\actortoactor-c163f-firebase-adminsdk-fbsvc-3192d6b8a3.json

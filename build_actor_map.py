@@ -25,7 +25,6 @@ def load_actor_data(region):
     """Load actor data from a single SQLite database filtered by region"""
     print(f"Loading actor data for {region}...")
     
-    # Look for the consolidated database in multiple possible locations
     possible_paths = [
         "public/actors.db",
         "actor-game/public/actors.db",
@@ -42,7 +41,6 @@ def load_actor_data(region):
     if not db_path:
         print(f"Consolidated actors database not found in any location")
         
-        # Fallback to check for legacy region-specific databases
         legacy_paths = [
             f"public/actors_{region}.db",
             f"actor-game/public/actors_{region}.db",
@@ -60,18 +58,13 @@ def load_actor_data(region):
             return None
     
     conn = sqlite3.connect(db_path)
-    
-    # Check if this is the new consolidated database or legacy format
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='actor_regions'")
     has_region_table = cursor.fetchone() is not None
     
     if has_region_table:
         print(f"Using consolidated database with region flags")
-        
-        # Load actors filtered by region
         if region == "GLOBAL":
-            # For GLOBAL, get actors with GLOBAL flag
             actors_df = pd.read_sql("""
                 SELECT a.id, a.name, a.popularity, a.profile_path 
                 FROM actors a
@@ -79,7 +72,6 @@ def load_actor_data(region):
                 WHERE ar.region = 'GLOBAL'
             """, conn)
         else:
-            # For specific regions, get actors from that region
             actors_df = pd.read_sql(f"""
                 SELECT a.id, a.name, a.popularity, a.profile_path 
                 FROM actors a
@@ -88,29 +80,24 @@ def load_actor_data(region):
             """, conn)
     else:
         print(f"Using legacy database format")
-        # Legacy format - just get all actors
         actors_df = pd.read_sql("SELECT id, name, popularity, profile_path FROM actors", conn)
     
-    # Get actor IDs for credits filtering
     actor_ids = actors_df['id'].tolist()
-    
     if not actor_ids:
         print(f"No actors found for region {region}")
         conn.close()
         return {}
     
-    # Format IDs for SQL query
     actor_ids_str = ', '.join(map(str, actor_ids))
     
-    # Load movie credits for these actors
     movie_credits_df = pd.read_sql(
         f"SELECT actor_id, id, title, poster_path, popularity FROM movie_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
-    # Load TV credits
+    # Now load TV credits and include the character field for filtering
     tv_credits_df = pd.read_sql(
-        f"SELECT actor_id, id, name as title, poster_path, popularity FROM tv_credits WHERE actor_id IN ({actor_ids_str})", 
+        f"SELECT actor_id, id, name as title, poster_path, popularity, character FROM tv_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
@@ -129,7 +116,6 @@ def load_actor_data(region):
             'tv_credits': []
         }
     
-    # Add movie credits to actors
     for _, row in movie_credits_df.iterrows():
         actor_id = str(row['actor_id'])
         if actor_id in actors:
@@ -140,7 +126,6 @@ def load_actor_data(region):
                 'popularity': row['popularity']
             })
     
-    # Add TV credits to actors
     for _, row in tv_credits_df.iterrows():
         actor_id = str(row['actor_id'])
         if actor_id in actors:
@@ -148,63 +133,65 @@ def load_actor_data(region):
                 'id': str(row['id']),
                 'title': row['title'],
                 'poster_path': row['poster_path'],
-                'popularity': row['popularity']
+                'popularity': row['popularity'],
+                'character': row.get('character')
             })
     
     print(f"Loaded {len(actors)} actors for {region}")
     return actors
 
 def build_actor_graph(actors, include_tv=True):
-    """Build a NetworkX graph of actor connections through movies/TV shows"""
+    """Build a NetworkX graph of actor connections through movies/TV shows,
+    filtering TV credits that likely don't represent scripted acting roles."""
     print("Building actor connection graph...")
     G = nx.Graph()
     
-    # Add all actors as nodes
+    # Add all actors as nodes.
     for actor_id, actor in actors.items():
-        if actor['profile_path']:  # Only include actors with images
-            G.add_node(actor_id, 
-                       type='actor',
-                       name=actor['name'],
-                       popularity=actor['popularity'],
-                       profile_path=actor['profile_path'])
+        G.add_node(actor_id, 
+                   type='actor',
+                   name=actor['name'],
+                   popularity=actor['popularity'],
+                   profile_path=actor.get('profile_path'))
     
-    # Create connections through movies
-    movie_to_actors = {}
+    # Create a dictionary mapping each credit ID to the list of actor IDs involved.
+    credit_to_actors = {}
     
-    # Process movie credits
+    # Process movie credits (all movies assumed to be proper acting projects)
     for actor_id, actor in tqdm(actors.items(), desc="Processing movie credits"):
-        if actor_id not in G: continue
-        
-        for credit in actor['movie_credits']:
+        for credit in actor.get('movie_credits', []):
             movie_id = credit['id']
-            if movie_id not in movie_to_actors:
-                movie_to_actors[movie_id] = []
-            movie_to_actors[movie_id].append(actor_id)
+            credit_to_actors.setdefault(movie_id, []).append(actor_id)
     
-    # Process TV credits if included
+    # Process TV credits with filtering heuristics.
     if include_tv:
+        excluded_keywords = ['talk', 'game', 'reality', 'news', 'award']
         for actor_id, actor in tqdm(actors.items(), desc="Processing TV credits"):
-            if actor_id not in G: continue
-            
-            for credit in actor['tv_credits']:
+            for credit in actor.get('tv_credits', []):
+                tv_title = credit.get('title', '').lower()
+                character = (credit.get('character') or "").strip().lower()
+                # Skip if the actor is simply playing himself/herself.
+                if character in ['self', 'himself', 'herself']:
+                    continue
+                # Skip if the TV title contains keywords suggesting a non-scripted format.
+                if any(keyword in tv_title for keyword in excluded_keywords):
+                    continue
                 show_id = credit['id']
-                if show_id not in movie_to_actors:
-                    movie_to_actors[show_id] = []
-                movie_to_actors[show_id].append(actor_id)
+                credit_to_actors.setdefault(show_id, []).append(actor_id)
     
-    # Add edges between actors who worked together
+    # Now create edges between any two actors who share a credit.
     edge_count = 0
-    for movie_id, actor_list in tqdm(movie_to_actors.items(), desc="Creating actor connections"):
+    for credit_id, actor_list in tqdm(credit_to_actors.items(), desc="Creating actor connections"):
+        if len(actor_list) < 2:
+            continue
         for i in range(len(actor_list)):
             for j in range(i+1, len(actor_list)):
                 actor1, actor2 = actor_list[i], actor_list[j]
                 if G.has_edge(actor1, actor2):
-                    # Edge already exists, just increment weight
                     G[actor1][actor2]['weight'] += 1
-                    G[actor1][actor2]['movies'].append(movie_id)
+                    G[actor1][actor2]['credits'].append(credit_id)
                 else:
-                    # Create new edge
-                    G.add_edge(actor1, actor2, weight=1, movies=[movie_id])
+                    G.add_edge(actor1, actor2, weight=1, credits=[credit_id])
                     edge_count += 1
     
     print(f"Built graph with {G.number_of_nodes()} actors and {edge_count} connections")
@@ -219,72 +206,47 @@ def find_paths_by_difficulty(G, actors, difficulty_config):
         'hard': []
     }
     
-    # Get top actors by popularity for start points
+    # Determine actor popularity for potential start points.
     actor_popularity = [(actor_id, actors[actor_id]['popularity']) 
-                        for actor_id in G.nodes() 
-                        if actor_id in actors]
+                        for actor_id in G.nodes() if actor_id in actors]
     actor_popularity.sort(key=lambda x: x[1], reverse=True)
     
-    # Top 10% for start actors
     top_actors = [a[0] for a in actor_popularity[:int(len(actor_popularity) * 0.1)]]
-    top_actors = top_actors[:100]  # Limit to at most 100 to prevent excessive computation
+    top_actors = top_actors[:100]  # Limit to 100 to reduce computation.
     
     print(f"Using {len(top_actors)} top actors as potential start points")
-    
-    # Track connections we've already processed
     processed_pairs = set()
     
-    # For each difficulty level
     for difficulty, config in difficulty_config.items():
         print(f"Processing {difficulty} difficulty...")
         min_connections = config['min_connections']
         max_connections = config['max_connections']
         target_count = config['count']
         
-        # For each start actor
         for start_actor_id in tqdm(top_actors, desc=f"Finding {difficulty} paths"):
-            # Determine target actor pool based on difficulty
             if difficulty == 'easy':
-                # Top 30% for easy mode
-                target_pool = [a[0] for a in actor_popularity[:int(len(actor_popularity) * 0.3)]]
+                target_pool = [a[0] for a in actor_popularity[:int(len(actor_popularity)*0.3)]]
             elif difficulty == 'normal':
-                # Middle 45% for normal mode
-                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity) * 0.15):int(len(actor_popularity) * 0.6)]]
+                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity)*0.15):int(len(actor_popularity)*0.6)]]
             else:  # hard
-                # Bottom 60% for hard mode
-                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity) * 0.4):]]
+                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity)*0.4):]]
             
-            # Exclude start actor from targets
             target_pool = [a for a in target_pool if a != start_actor_id]
-            
-            # Sample a subset of targets to try
-            sampled_targets = np.random.choice(target_pool, 
-                                              min(20, len(target_pool)), 
-                                              replace=False)
+            sampled_targets = np.random.choice(target_pool, min(20, len(target_pool)), replace=False)
             
             for target_actor_id in sampled_targets:
-                # Skip if we've already processed this pair
                 pair_key = tuple(sorted([start_actor_id, target_actor_id]))
                 if pair_key in processed_pairs:
                     continue
-                
                 processed_pairs.add(pair_key)
-                
                 try:
-                    # Find shortest path
                     shortest_path = nx.shortest_path(G, start_actor_id, target_actor_id)
-                    connection_length = len(shortest_path) - 1  # Number of edges (connections)
-                    
-                    # Check if path matches our difficulty criteria
+                    connection_length = len(shortest_path) - 1
                     if min_connections <= connection_length <= max_connections:
-                        # Convert path to full format with movie connections
                         full_path = []
-                        
                         for i in range(len(shortest_path) - 1):
                             actor1 = shortest_path[i]
-                            actor2 = shortest_path[i + 1]
-                            
-                            # Add first actor
+                            actor2 = shortest_path[i+1]
                             if i == 0:
                                 full_path.append({
                                     'type': 'actor',
@@ -292,59 +254,43 @@ def find_paths_by_difficulty(G, actors, difficulty_config):
                                     'name': actors[actor1]['name'],
                                     'profile_path': actors[actor1]['profile_path']
                                 })
-                            
-                            # Find a movie they were in together
-                            movie_id = G[actor1][actor2]['movies'][0]  # Take first movie
-                            
-                            # Find movie details from either actor's credits
+                            # Look for a credit (movie or TV) connecting these two actors.
+                            credit_id = G[actor1][actor2]['credits'][0]
                             movie_data = None
                             for credit in actors[actor1]['movie_credits']:
-                                if credit['id'] == movie_id:
+                                if credit['id'] == credit_id:
                                     movie_data = credit
                                     break
-                            
                             if not movie_data:
                                 for credit in actors[actor1]['tv_credits']:
-                                    if credit['id'] == movie_id:
+                                    if credit['id'] == credit_id:
                                         movie_data = credit
                                         break
-                            
-                            # Add movie to path
                             full_path.append({
                                 'type': 'movie',
-                                'id': movie_id,
+                                'id': credit_id,
                                 'title': movie_data['title'] if movie_data else 'Unknown',
                                 'poster_path': movie_data['poster_path'] if movie_data else None
                             })
-                            
-                            # Add second actor
                             full_path.append({
                                 'type': 'actor',
                                 'id': actor2,
                                 'name': actors[actor2]['name'],
                                 'profile_path': actors[actor2]['profile_path']
                             })
-                        
-                        # Store this path
                         paths_by_difficulty[difficulty].append({
                             'start_id': start_actor_id,
                             'target_id': target_actor_id,
                             'connection_length': connection_length,
                             'path': full_path
                         })
-                        
-                        # Break if we have enough paths for this difficulty
                         if len(paths_by_difficulty[difficulty]) >= target_count:
                             break
-                
                 except nx.NetworkXNoPath:
-                    continue  # No path exists
-            
-            # Break if we have enough paths for this difficulty
+                    continue
             if len(paths_by_difficulty[difficulty]) >= target_count:
                 break
     
-    # Print stats
     for difficulty, paths in paths_by_difficulty.items():
         print(f"Found {len(paths)} paths for {difficulty} difficulty")
     
@@ -352,14 +298,12 @@ def find_paths_by_difficulty(G, actors, difficulty_config):
 
 def compress_path(path):
     """Compress path data to save space"""
-    # Convert to minimal representation
     minimal_path = []
     for item in path:
         compressed = {
             't': 'a' if item['type'] == 'actor' else 'm',
             'i': item['id']
         }
-        
         if item['type'] == 'actor':
             compressed['n'] = item['name']
             if item['profile_path']:
@@ -368,10 +312,7 @@ def compress_path(path):
             compressed['n'] = item['title']
             if item['poster_path']:
                 compressed['p'] = item['poster_path']
-        
         minimal_path.append(compressed)
-    
-    # Serialize to JSON and compress
     json_str = json.dumps(minimal_path)
     return gzip.compress(json_str.encode('utf-8'))
 
@@ -379,7 +320,6 @@ def create_connection_database(paths_by_difficulty):
     """Create SQLite database with actor connections"""
     print("Creating connection database...")
     
-    # If base directory doesn't exist, try alternative paths
     if not os.path.exists(os.path.dirname(CONNECTION_DB_PATH)):
         alt_path = os.path.join(os.getcwd(), "actor-game", "public", "actor_connections.db")
         print(f"Primary path {CONNECTION_DB_PATH} not found, using {alt_path} instead")
@@ -387,18 +327,14 @@ def create_connection_database(paths_by_difficulty):
     else:
         connection_path = CONNECTION_DB_PATH
         
-    # Remove existing database if it exists
     if os.path.exists(connection_path):
         os.remove(connection_path)
     
-    # Ensure directory exists
     os.makedirs(os.path.dirname(connection_path), exist_ok=True)
     
-    # Create database
     conn = sqlite3.connect(connection_path)
     cursor = conn.cursor()
     
-    # Create table
     cursor.execute('''
     CREATE TABLE actor_connections (
         start_id TEXT NOT NULL,
@@ -410,15 +346,12 @@ def create_connection_database(paths_by_difficulty):
     )
     ''')
     
-    # Create indices
     cursor.execute('CREATE INDEX idx_difficulty ON actor_connections(difficulty)')
     cursor.execute('CREATE INDEX idx_connection_length ON actor_connections(connection_length)')
     
-    # Insert data
     for difficulty, paths in paths_by_difficulty.items():
         for path_data in tqdm(paths, desc=f"Inserting {difficulty} paths"):
             compressed_path = compress_path(path_data['path'])
-            
             cursor.execute(
                 'INSERT INTO actor_connections VALUES (?, ?, ?, ?, ?)',
                 (
@@ -429,8 +362,6 @@ def create_connection_database(paths_by_difficulty):
                     difficulty
                 )
             )
-    
-    # Commit changes and close
     conn.commit()
     conn.close()
     
@@ -439,20 +370,14 @@ def create_connection_database(paths_by_difficulty):
 def main():
     start_time = time.time()
     
-    # Load actor data for main regions
     all_actors = {}
     for region in REGIONS_TO_PROCESS:
         region_actors = load_actor_data(region)
         if region_actors:
             all_actors.update(region_actors)
     
-    # Build actor graph
     graph = build_actor_graph(all_actors)
-    
-    # Find paths by difficulty
     paths = find_paths_by_difficulty(graph, all_actors, DIFFICULTY_CONFIG)
-    
-    # Create connection database
     create_connection_database(paths)
     
     elapsed_time = time.time() - start_time
