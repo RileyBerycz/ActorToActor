@@ -1,0 +1,4 @@
+# Exclude old actor databases
+actors_*.db
+public/actors_*.db
+actor-game/public/actors_*.db
