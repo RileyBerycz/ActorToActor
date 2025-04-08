@@ -28,6 +28,12 @@ function ActorGame({ settings, onReset }) {
   
   const selectActorsRef = useRef(null);
 
+  const getImageUrl = (path, size = 'w185') => {
+    if (!path) return defaultImageUrl;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return `${BASE_IMG_URL}${size}${normalizedPath}`;
+  };
+
   const calculateOptimalPath = useCallback((startId, targetId) => {
     if (!actorData) return [];
     
@@ -583,7 +589,7 @@ function ActorGame({ settings, onReset }) {
       <div className="actor-game-header">
         <div className="start-actor">
           <img 
-            src={startActor?.profile_path ? `${BASE_IMG_URL}${PROFILE_SIZE}${startActor.profile_path}` : '/placeholder.png'} 
+            src={getImageUrl(startActor?.profile_path, PROFILE_SIZE)} 
             alt={startActor?.name || 'Starting Actor'} 
             className="actor-image"
           />
@@ -595,7 +601,7 @@ function ActorGame({ settings, onReset }) {
         
         <div className="target-actor">
           <img 
-            src={targetActor?.profile_path ? `${BASE_IMG_URL}${PROFILE_SIZE}${targetActor.profile_path}` : '/placeholder.png'} 
+            src={getImageUrl(targetActor?.profile_path, PROFILE_SIZE)} 
             alt={targetActor?.name || 'Target Actor'} 
             className="actor-image"
           />
@@ -670,7 +676,7 @@ function ActorGame({ settings, onReset }) {
                         {item.type === 'actor' ? (
                           <>
                             <img 
-                              src={item.profile_path ? `${BASE_IMG_URL}${PROFILE_SIZE}${item.profile_path}` : '/placeholder.png'} 
+                              src={getImageUrl(item.profile_path, PROFILE_SIZE)} 
                               alt={item.name} 
                             />
                             <div className="item-name">{item.name}</div>
@@ -678,7 +684,7 @@ function ActorGame({ settings, onReset }) {
                         ) : (
                           <>
                             <img 
-                              src={item.poster_path ? `${BASE_IMG_URL}${POSTER_SIZE}${item.poster_path}` : '/movie-placeholder.png'} 
+                              src={getImageUrl(item.poster_path, POSTER_SIZE)} 
                               alt={item.title} 
                             />
                             <div className="item-name">{item.title}</div>

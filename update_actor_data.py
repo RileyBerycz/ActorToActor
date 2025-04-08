@@ -4,6 +4,7 @@ import json
 import time
 import sqlite3
 import random
+import pycountry
 from requests.exceptions import ConnectionError, Timeout, RequestException
 
 # Retrieve your TMDB API key from environment variables
@@ -26,14 +27,69 @@ POSTER_SIZE = "w342"
 # How many pages of popular actors to fetch
 TOTAL_PAGES = 100
 
-# Define regions we want to track
-REGIONS = {
-    "US": {"name": "United States", "countries": ["US"], "threshold": 15},
-    "UK": {"name": "United Kingdom", "countries": ["GB"], "threshold": 15},
-    "EU": {"name": "Europe", "countries": ["FR", "DE", "ES", "IT"], "threshold": 15},
-    "ASIA": {"name": "Asia", "countries": ["JP", "KR", "CN", "IN"], "threshold": 15},
-    "GLOBAL": {"name": "Global", "countries": [], "threshold": 25}
+# Expanded region approach
+# Create regions dictionary dynamically with all countries
+REGIONS = {}
+
+# Add global region
+REGIONS["GLOBAL"] = {"name": "Global", "countries": [], "threshold": 25}
+
+# Add continental/regional groups
+CONTINENTS = {
+    "NAMERICA": {"name": "North America", "countries": ["US", "CA", "MX"], "threshold": 15},
+    "EUROPE": {"name": "Europe", "threshold": 15},
+    "ASIA": {"name": "Asia", "threshold": 15},
+    "SAMERICA": {"name": "South America", "threshold": 15},
+    "AFRICA": {"name": "Africa", "threshold": 15},
+    "OCEANIA": {"name": "Oceania", "threshold": 15}
 }
+
+# Add all these regions
+REGIONS.update(CONTINENTS)
+
+# Add individual countries
+for country in pycountry.countries:
+    code = country.alpha_2
+    REGIONS[code] = {
+        "name": country.name,
+        "countries": [code],
+        "threshold": 8,  # Lower threshold for individual countries
+        "continent": None  # Placeholder for continent mapping
+    }
+
+# Helper function to determine which continent a country belongs to
+def get_continent(country_code):
+    """Determine which continent a country belongs to"""
+    # Basic mapping of some common countries to continents
+    europe_codes = ['GB', 'FR', 'DE', 'IT', 'ES', 'PT', 'BE', 'NL', 'CH', 'AT', 'SE', 'NO', 'DK', 'FI', 'PL']
+    namerica_codes = ['US', 'CA', 'MX']
+    samerica_codes = ['BR', 'AR', 'CO', 'PE', 'CL', 'VE']
+    asia_codes = ['CN', 'JP', 'KR', 'IN', 'TH', 'VN', 'MY', 'ID', 'PH', 'SG']
+    oceania_codes = ['AU', 'NZ']
+    africa_codes = ['ZA', 'NG', 'EG', 'MA', 'KE']
+    
+    if country_code in europe_codes:
+        return 'EUROPE'
+    elif country_code in namerica_codes:
+        return 'NAMERICA'
+    elif country_code in samerica_codes:
+        return 'SAMERICA'
+    elif country_code in asia_codes:
+        return 'ASIA'
+    elif country_code in oceania_codes:
+        return 'OCEANIA'
+    elif country_code in africa_codes:
+        return 'AFRICA'
+    else:
+        return 'OTHER'
+
+# Helper function to get threshold value for a country
+def get_country_threshold(country_code):
+    """Get the threshold value for a specific country"""
+    if country_code in REGIONS:
+        return REGIONS[country_code].get("threshold", 8)  # Default to 8 if not specified
+    else:
+        return 8  # Default threshold for countries not in REGIONS
 
 # Robust API request function with exponential backoff
 def make_api_request(url, params, max_retries=5):
@@ -68,10 +124,10 @@ def make_api_request(url, params, max_retries=5):
     print(f"Failed after {max_retries} retries. Skipping this request.")
     return None
 
-# Database setup function
-def setup_database(region):
-    """Create SQLite database for a specific region"""
-    db_path = f"actor-game/public/actors_{region}.db"
+# Database setup function - create a single database
+def setup_database():
+    """Create a single SQLite database with region flags"""
+    db_path = "actor-game/public/actors.db"
     
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -99,6 +155,7 @@ def setup_database(region):
     CREATE TABLE actor_regions (
         actor_id INTEGER,
         region TEXT,
+        popularity_score REAL,  # Add this column
         PRIMARY KEY (actor_id, region),
         FOREIGN KEY (actor_id) REFERENCES actors (id)
     )
@@ -137,10 +194,15 @@ def setup_database(region):
     conn.commit()
     return conn, cursor
 
-# Set up databases for all regions
-databases = {}
-for region in list(REGIONS.keys()) + ["GLOBAL"]:
-    databases[region] = setup_database(region)
+# Add this helper function:
+def normalize_image_path(path):
+    """Ensure image path has leading slash if it exists"""
+    if not path:
+        return ""
+    return path if path.startswith('/') else f"/{path}"
+
+# Set up single database instead of multiple region-specific ones
+conn, cursor = setup_database()
 
 # Track processed actors to avoid duplicates
 processed_actors = set()
@@ -180,7 +242,7 @@ def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
                 
             # Check if movie was released in any of the region's countries
             released_in_region = False
-            for country in info["countries"]:
+            for country in info.get("countries", []):
                 if country in release_data:
                     released_in_region = True
                     break
@@ -207,7 +269,7 @@ def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
                 
             # Check if TV show was available in any of the region's countries
             available_in_region = False
-            for country in info["countries"]:
+            for country in info.get("countries", []):
                 if country in availability_data:
                     available_in_region = True
                     break
@@ -244,12 +306,33 @@ def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
     if not qualified_regions:
         qualified_regions.append("OTHER")
     
-    return qualified_regions
+    return qualified_regions, avg_scores
+
+def assign_countries_to_actor(release_data):
+    """Maps all countries where an actor's work was released"""
+    country_scores = {}
+    
+    # Process all countries in release data
+    for movie_id, countries in release_data.items():
+        for country_code in countries:
+            if country_code not in country_scores:
+                country_scores[country_code] = 0
+            country_scores[country_code] += 1
+    
+    # Apply thresholds based on country size/market
+    qualified_countries = []
+    for country, score in country_scores.items():
+        # Get country-specific threshold from configuration
+        threshold = get_country_threshold(country)
+        if score >= threshold:
+            qualified_countries.append(country)
+    
+    return qualified_countries
 
 def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
     """Determine which regions an actor is popular in with tiered approach"""
     # Calculate base regional scores
-    regional_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
+    regional_scores, avg_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
     
     # Get overall popularity from TMDB
     overall_popularity = actor_data.get("popularity", 0)
@@ -300,7 +383,7 @@ def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
         # Fallback to region with most credits
         regional_scores.append("OTHER")
     
-    return regional_scores
+    return regional_scores, avg_scores
 
 def get_movie_release_data(movie_id):
     """Get release data for a movie by country with caching"""
@@ -391,7 +474,10 @@ for page in range(1, TOTAL_PAGES + 1):
         
         actor_name = person["name"]
         popularity = person.get("popularity", 0)
-        profile_path = person.get("profile_path", "")
+        profile_path = normalize_image_path(person.get("profile_path", ""))
+        
+        # Construct profile image URL
+        profile_image_url = f"{IMAGE_BASE_URL}{PROFILE_SIZE}{profile_path}" if profile_path else ""
         
         print(f"Fetching data for {actor_name} (ID: {actor_id})")
         
@@ -406,7 +492,7 @@ for page in range(1, TOTAL_PAGES + 1):
             
             # Update profile_path if missing from popular actors list
             if not profile_path and details_data.get("profile_path"):
-                profile_path = details_data.get("profile_path")
+                profile_path = normalize_image_path(details_data.get("profile_path"))
             
             # Handle None values
             if place_of_birth is None:
@@ -423,7 +509,10 @@ for page in range(1, TOTAL_PAGES + 1):
                 # Only add movies above popularity threshold
                 if credit.get("popularity", 0) > 1.5:
                     movie_id = credit["id"]
-                    poster_path = credit.get("poster_path", "")
+                    poster_path = normalize_image_path(credit.get("poster_path", ""))
+                    
+                    # Construct poster image URL
+                    poster_image_url = f"{IMAGE_BASE_URL}{POSTER_SIZE}{poster_path}" if poster_path else ""
                     
                     # Check MCU status from cache first
                     is_mcu = False
@@ -470,7 +559,10 @@ for page in range(1, TOTAL_PAGES + 1):
             for credit in tv_credits_data.get("cast", []):
                 if credit.get("popularity", 0) > 1.5:
                     tv_id = credit["id"]
-                    poster_path = credit.get("poster_path", "")
+                    poster_path = normalize_image_path(credit.get("poster_path", ""))
+                    
+                    # Construct poster image URL
+                    poster_image_url = f"{IMAGE_BASE_URL}{POSTER_SIZE}{poster_path}" if poster_path else ""
                     
                     # Check MCU status from cache first
                     is_mcu = False
@@ -513,7 +605,7 @@ for page in range(1, TOTAL_PAGES + 1):
                         time.sleep(0.25)  # 250ms between new TV lookups
         
         # Calculate regional popularity
-        actor_regions = assign_actor_to_regions(
+        actor_regions, avg_scores = assign_actor_to_regions(
             {"id": actor_id, "name": actor_name, "popularity": popularity},
             movie_credits,
             tv_credits
@@ -522,13 +614,8 @@ for page in range(1, TOTAL_PAGES + 1):
         # Log region assignments for debugging
         print(f"Assigned {actor_name} to regions: {', '.join(actor_regions)}")
         
-        # Insert data into appropriate region databases
+        # Insert data into the database
         for region in actor_regions:
-            if region not in databases:
-                continue
-                
-            conn, cursor = databases[region]
-            
             # Clean text for SQL
             safe_name = actor_name.replace("'", "''")
             safe_place = place_of_birth.replace("'", "''") if place_of_birth else "Unknown"
@@ -548,8 +635,8 @@ for page in range(1, TOTAL_PAGES + 1):
             
             # Insert region data for this actor
             cursor.execute(f"""
-            INSERT OR REPLACE INTO actor_regions (actor_id, region)
-            VALUES ({actor_id}, '{region}')
+            INSERT OR REPLACE INTO actor_regions (actor_id, region, popularity_score)
+            VALUES ({actor_id}, '{region}', {avg_scores[region]})
             """)
             
             # Insert movie credits (with is_mcu flag)
@@ -601,21 +688,20 @@ for page in range(1, TOTAL_PAGES + 1):
     time.sleep(1)
     print(f"Completed page {page}/{TOTAL_PAGES}")
 
-# Optimize databases and close connections
-for region, (conn, cursor) in databases.items():
-    # Create indexes for better performance
-    cursor.execute("CREATE INDEX idx_movie_credits_actor ON movie_credits (actor_id)")
-    cursor.execute("CREATE INDEX idx_movie_credits_mcu ON movie_credits (is_mcu)")
-    cursor.execute("CREATE INDEX idx_tv_credits_actor ON tv_credits (actor_id)")
-    cursor.execute("CREATE INDEX idx_tv_credits_mcu ON tv_credits (is_mcu)")
-    cursor.execute("CREATE INDEX idx_actor_regions ON actor_regions (region)")
-    
-    # Optimize database
-    cursor.execute("VACUUM")
-    conn.commit()
-    conn.close()
-    
-    print(f"Database for region {region} saved successfully")
+# Optimize database and close connection
+# Create indexes for better performance
+cursor.execute("CREATE INDEX idx_movie_credits_actor ON movie_credits (actor_id)")
+cursor.execute("CREATE INDEX idx_movie_credits_mcu ON movie_credits (is_mcu)")
+cursor.execute("CREATE INDEX idx_tv_credits_actor ON tv_credits (actor_id)")
+cursor.execute("CREATE INDEX idx_tv_credits_mcu ON tv_credits (is_mcu)")
+cursor.execute("CREATE INDEX idx_actor_regions ON actor_regions (region)")
+
+# Optimize database
+cursor.execute("VACUUM")
+conn.commit()
+conn.close()
+
+print("Database saved successfully")
 
 # Add a flag file to indicate data status
 with open("actor-game/public/data_source_info.json", "w") as f:
@@ -626,5 +712,5 @@ with open("actor-game/public/data_source_info.json", "w") as f:
 
 print("""
 All data successfully updated:
-- SQLite databases saved to GitHub repository
+- SQLite database saved to GitHub repository
 """)
