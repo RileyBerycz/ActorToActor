@@ -11,7 +11,7 @@ import time
 
 # Constants
 REGIONS = ['GLOBAL', 'US', 'UK', 'CA', 'AU', 'FR', 'DE', 'IN', 'KR', 'JP', 'CN']
-CONNECTION_DB_PATH = 'public/actor_connections.db'
+CONNECTION_DB_PATH = 'actor-game/public/actor_connections.db'  # Updated path
 REGIONS_TO_PROCESS = ['GLOBAL', 'US', 'UK']  # Prioritize these regions for connections
 
 # Difficulty settings
@@ -379,15 +379,23 @@ def create_connection_database(paths_by_difficulty):
     """Create SQLite database with actor connections"""
     print("Creating connection database...")
     
+    # If base directory doesn't exist, try alternative paths
+    if not os.path.exists(os.path.dirname(CONNECTION_DB_PATH)):
+        alt_path = os.path.join(os.getcwd(), "actor-game", "public", "actor_connections.db")
+        print(f"Primary path {CONNECTION_DB_PATH} not found, using {alt_path} instead")
+        connection_path = alt_path
+    else:
+        connection_path = CONNECTION_DB_PATH
+        
     # Remove existing database if it exists
-    if os.path.exists(CONNECTION_DB_PATH):
-        os.remove(CONNECTION_DB_PATH)
+    if os.path.exists(connection_path):
+        os.remove(connection_path)
     
     # Ensure directory exists
-    os.makedirs(os.path.dirname(CONNECTION_DB_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(connection_path), exist_ok=True)
     
     # Create database
-    conn = sqlite3.connect(CONNECTION_DB_PATH)
+    conn = sqlite3.connect(connection_path)
     cursor = conn.cursor()
     
     # Create table
@@ -426,7 +434,7 @@ def create_connection_database(paths_by_difficulty):
     conn.commit()
     conn.close()
     
-    print(f"Connection database created at {CONNECTION_DB_PATH}")
+    print(f"Connection database created at {connection_path}")
 
 def main():
     start_time = time.time()

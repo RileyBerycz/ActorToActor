@@ -5,7 +5,7 @@ name: Update Actor Connection Map
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight
+    - cron: '0 0 * * 1'  # Run weekly on Monday at midnight (day after data update)
   workflow_dispatch:     # Allow manual triggering
 
 permissions:
