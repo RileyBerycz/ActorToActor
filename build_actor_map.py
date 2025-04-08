@@ -22,14 +22,14 @@ DIFFICULTY_CONFIG = {
 }
 
 def load_actor_data(region):
-    """Load actor data from SQLite database for a specific region"""
+    """Load actor data from a single SQLite database filtered by region"""
     print(f"Loading actor data for {region}...")
     
-    # Look in multiple possible locations
+    # Look for the consolidated database in multiple possible locations
     possible_paths = [
-        f"public/actors_{region}.db",
-        f"actor-game/public/actors_{region}.db",
-        f"./actors_{region}.db"
+        "public/actors.db",
+        "actor-game/public/actors.db",
+        "./actors.db"
     ]
     
     db_path = None
@@ -40,23 +40,77 @@ def load_actor_data(region):
             break
     
     if not db_path:
-        print(f"Database for {region} not found in any location")
-        return None
+        print(f"Consolidated actors database not found in any location")
+        
+        # Fallback to check for legacy region-specific databases
+        legacy_paths = [
+            f"public/actors_{region}.db",
+            f"actor-game/public/actors_{region}.db",
+            f"./actors_{region}.db"
+        ]
+        
+        for path in legacy_paths:
+            if os.path.exists(path):
+                print(f"Found legacy database at {path}")
+                db_path = path
+                break
+        
+        if not db_path:
+            print(f"No database found for {region}")
+            return None
     
     conn = sqlite3.connect(db_path)
     
-    # Load actors
-    actors_df = pd.read_sql("SELECT id, name, popularity, profile_path FROM actors", conn)
+    # Check if this is the new consolidated database or legacy format
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='actor_regions'")
+    has_region_table = cursor.fetchone() is not None
     
-    # Load movie credits
+    if has_region_table:
+        print(f"Using consolidated database with region flags")
+        
+        # Load actors filtered by region
+        if region == "GLOBAL":
+            # For GLOBAL, get actors with GLOBAL flag
+            actors_df = pd.read_sql("""
+                SELECT a.id, a.name, a.popularity, a.profile_path 
+                FROM actors a
+                JOIN actor_regions ar ON a.id = ar.actor_id
+                WHERE ar.region = 'GLOBAL'
+            """, conn)
+        else:
+            # For specific regions, get actors from that region
+            actors_df = pd.read_sql(f"""
+                SELECT a.id, a.name, a.popularity, a.profile_path 
+                FROM actors a
+                JOIN actor_regions ar ON a.id = ar.actor_id
+                WHERE ar.region = '{region}'
+            """, conn)
+    else:
+        print(f"Using legacy database format")
+        # Legacy format - just get all actors
+        actors_df = pd.read_sql("SELECT id, name, popularity, profile_path FROM actors", conn)
+    
+    # Get actor IDs for credits filtering
+    actor_ids = actors_df['id'].tolist()
+    
+    if not actor_ids:
+        print(f"No actors found for region {region}")
+        conn.close()
+        return {}
+    
+    # Format IDs for SQL query
+    actor_ids_str = ', '.join(map(str, actor_ids))
+    
+    # Load movie credits for these actors
     movie_credits_df = pd.read_sql(
-        "SELECT actor_id, id, title, poster_path, popularity FROM movie_credits", 
+        f"SELECT actor_id, id, title, poster_path, popularity FROM movie_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
-    # Load TV credits if needed
+    # Load TV credits
     tv_credits_df = pd.read_sql(
-        "SELECT actor_id, id, name as title, poster_path, popularity FROM tv_credits", 
+        f"SELECT actor_id, id, name as title, poster_path, popularity FROM tv_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
