@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import initSqlJs from 'sql.js';
 import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 import GameControls from './GameControls';
 import PathDisplay from './PathDisplay';
 import '../css/ActorGame.css'; 
 import { db as firebaseDb } from '../firebase';
+
+// Constants for database locations
+const DB_URLS = {
+  LOCAL: 'actors.db',
+  GITHUB: 'https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actor-game/public/actors.db',
+  CONNECTION_DB: 'actor_connections.db',
+  GITHUB_CONNECTION_DB: 'https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actor-game/public/actor_connections.db'
+};
 
 function ActorGame({ settings, onReset }) {
   const [actorData, setActorData] = useState(null);
@@ -21,10 +28,14 @@ function ActorGame({ settings, onReset }) {
   const [optimalPath, setOptimalPath] = useState(null);
   const [showOptimalPath, setShowOptimalPath] = useState(false);
   const [hintTimer, setHintTimer] = useState(null);
+  const [dataSource, setDataSource] = useState(null);
+  const [selectingActors, setSelectingActors] = useState(false);
+  const [pathConnectionCount, setPathConnectionCount] = useState(0);
 
   const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
   const PROFILE_SIZE = "w185";
   const POSTER_SIZE = "w342";
+  const defaultImageUrl = "/placeholder-actor.png";
   
   const selectActorsRef = useRef(null);
 
@@ -41,12 +52,11 @@ function ActorGame({ settings, onReset }) {
     const visited = new Set();
     const previous = new Map();
     
-    // Add max depth limit based on difficulty
     let maxDepth;
     switch(settings.difficulty) {
-      case 'easy': maxDepth = 8; break;  // Up to 4 actor connections
-      case 'normal': maxDepth = 12; break; // Up to 6 actor connections
-      case 'hard': maxDepth = 20; break;   // Up to 10 actor connections
+      case 'easy': maxDepth = 8; break;
+      case 'normal': maxDepth = 12; break;
+      case 'hard': maxDepth = 20; break;
       default: maxDepth = 20;
     }
     
@@ -61,7 +71,6 @@ function ActorGame({ settings, onReset }) {
     while (queue.length > 0) {
       const current = queue.shift();
       
-      // Check for target
       if (current.type === 'actor' && current.id === targetId) {
         const path = [];
         let node = current;
@@ -74,7 +83,6 @@ function ActorGame({ settings, onReset }) {
         return path;
       }
       
-      // Skip if we've reached max depth
       if (current.depth >= maxDepth) continue;
       
       if (current.type === 'actor') {
@@ -89,10 +97,9 @@ function ActorGame({ settings, onReset }) {
         const filteredCredits = settings.excludeMcu ? 
           credits.filter(c => !c.is_mcu) : credits;
         
-        // Prioritize popular movies to find better paths
         const sortedCredits = [...filteredCredits].sort((a, b) => b.popularity - a.popularity);
         
-        for (const credit of sortedCredits.slice(0, 15)) { // Limit to 15 most popular movies
+        for (const credit of sortedCredits.slice(0, 15)) {
           const creditId = `movie-${credit.id}`;
           if (!visited.has(creditId)) {
             const nextNode = {
@@ -110,15 +117,14 @@ function ActorGame({ settings, onReset }) {
           }
         }
       } else {
-        // Sample actors to avoid checking too many
         const relevantActors = Object.entries(actorData)
           .filter(([actorId, actor]) => {
             return actor.movie_credits.some(c => c.id === current.id) ||
               (settings.difficulty === 'hard' ? 
                 actor.tv_credits.some(c => c.id === current.id) : false);
           })
-          .sort(() => 0.5 - Math.random()) // Randomize
-          .slice(0, 20); // Limit to 20 actors per movie
+          .sort(() => 0.5 - Math.random())
+          .slice(0, 20);
         
         for (const [actorId, actor] of relevantActors) {
           const actorNodeId = `actor-${actorId}`;
@@ -143,155 +149,68 @@ function ActorGame({ settings, onReset }) {
     return [];
   }, [actorData, settings]);
 
+  // Simplify the selectActorsWithValidPath function
   const selectActorsWithValidPath = useCallback(() => {
-    if (!actorData) return;
+    if (!actorData || selectingActors) return;
     
-    setLoadingMessage("Finding actors for your game...");
+    console.log("Starting actor selection");
+    setSelectingActors(true);
     
-    // Filter actors with profile images for better UI
-    const filteredActors = Object.entries(actorData)
-      .filter(([_, actor]) => actor.profile_path)
-      .map(([id, actor]) => ({
-        id,
-        ...actor
-      }));
-    
-    // Sort by popularity for better start/target selection
-    const sortedActors = [...filteredActors].sort((a, b) => b.popularity - a.popularity);
-    
-    if (sortedActors.length < 50) {
-      setError("Not enough actors available. Try a different region.");
-      return;
-    }
-    
-    // Define path length targets based on difficulty
-    // These are actor-to-actor connections (each connection is actor-movie-actor)
-    const pathLengthRanges = {
-      'easy': [1, 3],     // 1-3 actor connections
-      'normal': [3, 5],   // 3-5 actor connections
-      'hard': [5, 8]      // 5-8 actor connections
-    };
-    
-    const [minConnections, maxConnections] = pathLengthRanges[settings.difficulty] || [1, 8];
-    
-    // Top 10% for start actor (always well-known)
-    const topActors = sortedActors.slice(0, Math.max(5, Math.floor(sortedActors.length * 0.1)));
-    
-    // Sample multiple start actors to try
-    const startActorCandidates = sampleActors(topActors, 5);
-    
-    // Initialize variables to track our best match
-    let bestStartActor = null;
-    let bestTargetActor = null;
-    let bestPath = null;
-    let attempts = 0;
-    const maxAttempts = 100;
-    
-    // Function to sample actors from a pool
-    function sampleActors(actorPool, count) {
-      const shuffled = [...actorPool].sort(() => 0.5 - Math.random());
-      return shuffled.slice(0, Math.min(count, actorPool.length));
-    }
-    
-    // For each potential start actor
-    for (const startActor of startActorCandidates) {
-      setLoadingMessage(`Testing ${startActor.name} as start actor...`);
+    try {
+      setLoadingMessage("Finding actors for your game...");
+      setLoadingProgress(85);
       
-      // Select target actor pool based on difficulty
-      let targetPool;
-      const totalCount = sortedActors.length;
+      // Get actors with profile images
+      const filteredActors = Object.entries(actorData)
+        .filter(([_, actor]) => actor.profile_path)
+        .map(([id, actor]) => ({
+          id,
+          ...actor
+        }))
+        .sort((a, b) => b.popularity - a.popularity);
       
-      switch(settings.difficulty) {
-        case 'easy':
-          // Well-known actors (top 30%) for easy mode
-          targetPool = sortedActors.slice(0, Math.floor(totalCount * 0.3));
-          break;
-        case 'normal':
-          // Medium popularity (15%-60%) for normal mode
-          targetPool = sortedActors.slice(
-            Math.floor(totalCount * 0.15),
-            Math.floor(totalCount * 0.6)
-          );
-          break;
-        case 'hard':
-          // Less known actors (40%-100%) for hard mode
-          targetPool = sortedActors.slice(Math.floor(totalCount * 0.4));
-          break;
-        default:
-          targetPool = sortedActors;
+      if (filteredActors.length < 2) {
+        setError("Not enough actors available. Try a different region.");
+        setLoading(false);
+        setSelectingActors(false);
+        return;
       }
       
-      // Remove the start actor from potential targets
-      targetPool = targetPool.filter(actor => actor.id !== startActor.id);
+      // Simple selection - just take two popular actors
+      const startIndex = Math.floor(Math.random() * Math.min(10, filteredActors.length));
+      let targetIndex;
+      do {
+        targetIndex = Math.floor(Math.random() * Math.min(20, filteredActors.length));
+      } while (targetIndex === startIndex);
       
-      // Sample a subset of target actors to try (for efficiency)
-      const targetCandidates = sampleActors(targetPool, 10);
+      const startActor = filteredActors[startIndex];
+      const targetActor = filteredActors[targetIndex];
       
-      // Try each target actor
-      for (const targetActor of targetCandidates) {
-        attempts++;
-        if (attempts > maxAttempts) break;
-        
-        setLoadingMessage(`Testing connection: ${startActor.name} → ${targetActor.name}`);
-        setLoadingProgress(Math.min(90, 50 + Math.floor((attempts / maxAttempts) * 40)));
-        
-        // Calculate path between these actors
-        const path = calculateOptimalPath(startActor.id, targetActor.id);
-        
-        // If path exists
-        if (path.length > 0) {
-          // Count actual connections (every 2 steps is one actor-to-actor connection)
-          const connectionCount = Math.floor(path.length / 2);
-          
-          console.log(`Found path from ${startActor.name} to ${targetActor.name} with ${connectionCount} connections`);
-          
-          // Check if this path matches our difficulty criteria
-          if (connectionCount >= minConnections && connectionCount <= maxConnections) {
-            // Perfect match for our difficulty!
-            bestStartActor = startActor;
-            bestTargetActor = targetActor;
-            bestPath = path;
-            
-            // Early exit - we found what we wanted
-            setLoadingMessage(`Found perfect match: ${startActor.name} → ${targetActor.name} (${connectionCount} connections)`);
-            break;
-          }
-          
-          // If we haven't found a path yet, or this path is better for our difficulty,
-          // update our best candidates
-          if (!bestPath || (connectionCount >= minConnections && connectionCount <= maxConnections)) {
-            bestStartActor = startActor;
-            bestTargetActor = targetActor;
-            bestPath = path;
-          }
-        }
-      }
+      console.log(`Selected ${startActor.name} and ${targetActor.name}`);
       
-      // If we already found a perfect match, stop trying
-      if (bestPath && Math.floor(bestPath.length / 2) >= minConnections && Math.floor(bestPath.length / 2) <= maxConnections) {
-        break;
-      }
-    }
-    
-    // If we found any valid path, use it
-    if (bestPath && bestPath.length > 0) {
-      const connectionCount = Math.floor(bestPath.length / 2);
-      setLoadingMessage(`Ready to play! Found a ${connectionCount}-connection path.`);
-      setStartActor(bestStartActor);
-      setTargetActor(bestTargetActor);
-      setOptimalPath(bestPath);
+      // Find path between them for hints
+      const path = calculateOptimalPath(startActor.id, targetActor.id);
+      setOptimalPath(path);
+      
+      // Set state and start game
+      setStartActor({...startActor, type: 'actor'});
+      setTargetActor({...targetActor, type: 'actor'});
+      
       setLoadingProgress(100);
+      setLoadingMessage("Ready to play!");
       
       setTimeout(() => {
         setGamePhase('playing');
         setLoading(false);
-      }, 500);
-      return;
+        setSelectingActors(false);
+      }, 1000);
+    } catch (error) {
+      console.error("Error selecting actors:", error);
+      setError(`Error: ${error.message}`);
+      setLoading(false);
+      setSelectingActors(false);
     }
-    
-    // If we got here, we couldn't find a suitable path
-    setError("Couldn't find a valid actor pairing. Try changing settings or regions.");
-  }, [actorData, calculateOptimalPath, settings]);
+  }, [actorData, calculateOptimalPath]);
 
   useEffect(() => {
     selectActorsRef.current = selectActorsWithValidPath;
@@ -335,18 +254,67 @@ function ActorGame({ settings, onReset }) {
   }, [generateHint, hintTimer]);
   
   const handleSelection = useCallback((selection) => {
-    setPath(prev => [...prev, selection]);
+    console.log("Adding to path:", selection);
+    // Ensure selection has all required fields
+    const processedSelection = {
+      ...selection,
+      name: selection.name || selection.title || 'Unknown',
+      type: selection.type || (selection.profile_path ? 'actor' : 'movie')
+    };
     
-    if (selection.type === 'actor' && selection.id === targetActor?.id) {
-      setGamePhase('completed');
+    // Add the selection to the path
+    setPath(prevPath => [...prevPath, processedSelection]);
+    
+    // Check if this completes the path to the target
+    if (selection.type === 'actor' && targetActor && selection.id === targetActor.id) {
+      console.log("Target reached!");
+      // Path is complete - allow time for state update before changing phase
+      setTimeout(() => {
+        setGamePhase('completed');
+      }, 800);
     }
   }, [targetActor]);
 
+// Fix the handlePathComplete function to count connections properly
+const handlePathComplete = (completedPath) => {
+  console.log("Path completion triggered!");
+  console.log("Completed path:", completedPath);
+  
+  // Set the full path
+  setPath(completedPath);
+  
+  // Filter out duplicate entries to get the correct path
+  const uniquePath = [];
+  let lastType = null;
+  
+  for (const item of completedPath) {
+    // Skip consecutive items of the same type (prevents duplicates)
+    if (item.type !== lastType) {
+      uniquePath.push(item);
+      lastType = item.type;
+    }
+  }
+  
+  // Calculate actual connections (shared movies)
+  // In a valid path: actor -> movie -> actor -> movie -> actor
+  // Number of connections = number of movies = Math.floor(uniquePath.length / 2)
+  const connectionCount = Math.floor(uniquePath.length / 2);
+  
+  console.log("Unique path:", uniquePath);
+  console.log("Connection count:", connectionCount);
+  
+  // Store the cleaned path and connection count for display
+  setOptimalPath(uniquePath);
+  setPathConnectionCount(connectionCount);
+  setGamePhase('completed');
+};
+
   useEffect(() => {
-    if (actorData && !loading && !startActor && gamePhase === 'initializing' && selectActorsRef.current) {
+    if (actorData && !loading && !startActor && gamePhase === 'initializing' && 
+        selectActorsRef.current && !selectingActors) { // Add !selectingActors check
       selectActorsRef.current();
     }
-  }, [actorData, loading, startActor, gamePhase]);
+  }, [actorData, loading, startActor, gamePhase, selectingActors]);
 
   useEffect(() => {
     if (startActor && targetActor && actorData) {
@@ -386,185 +354,460 @@ function ActorGame({ settings, onReset }) {
     }
   }, [path, hintTimer]);
 
-  useEffect(() => {
-    async function loadFromFirebase() {
+  const loadFromSqlite = useCallback(async () => {
+    try {
+      setLoading(true);
+      setLoadingMessage("Loading actors from database...");
+      setLoadingProgress(10);
+      
+      const cacheKey = `actor-data-${settings.region}-${settings.difficulty}`;
+      const cachedData = localStorage.getItem(cacheKey);
+      
+      if (cachedData) {
+        try {
+          setLoadingMessage("Loading data from browser cache...");
+          const parsedData = JSON.parse(cachedData);
+          const cacheTimestamp = parsedData._timestamp || 0;
+          const currentTime = new Date().getTime();
+          
+          if (currentTime - cacheTimestamp < 24 * 60 * 60 * 1000) {
+            setLoadingMessage("Using cached actor data...");
+            setLoadingProgress(90);
+            
+            const { _timestamp, _dataSource, ...actorDataOnly } = parsedData;
+            
+            // Updated: Set actor data but don't return yet
+            setDataSource(`cache:${_dataSource}`);
+            setActorData(actorDataOnly);
+            
+            // Progress to actor selection but STAY in loading state
+            setLoadingProgress(80);
+            setLoadingMessage("Data loaded! Selecting actors for your game...");
+            
+            // Critical fix: Directly call actor selection with a slight delay
+            // to ensure state updates have propagated
+            setTimeout(() => {
+              if (!selectingActors) {
+                console.log("Directly triggering actor selection after cache load");
+                selectActorsWithValidPath();
+              }
+            }, 300);
+            
+            return true;
+          } else {
+            setLoadingMessage("Cache expired, fetching fresh data...");
+          }
+        } catch (err) {
+          console.error("Error loading from cache:", err);
+          setLoadingMessage("Cache corrupted, fetching fresh data...");
+        }
+      }
+      
+      let SQL;
       try {
-        setLoadingMessage("Loading data from Firebase...");
-        const actorsRef = collection(firebaseDb, "actors");
-        const q = query(
-          actorsRef, 
-          where("regions", "array-contains", settings.region),
-          limit(500)
-        );
+        setLoadingMessage("Initializing SQL.js...");
         
-        setLoadingProgress(30);
-        const actorSnapshot = await getDocs(q);
+        const SQL_CDN_URL = 'https://sql.js.org/dist/sql-wasm.wasm';
         
-        if (actorSnapshot.empty) {
-          console.log("No data found in Firebase, falling back to SQLite");
-          return null;
+        const initSqlJs = (await import('sql.js')).default;
+        SQL = await initSqlJs({
+          locateFile: file => SQL_CDN_URL
+        });
+        
+        setLoadingMessage("SQL.js initialized successfully!");
+      } catch (err) {
+        console.error("Error initializing SQL.js:", err);
+        setLoadingMessage("Error loading SQL engine. Trying fallback...");
+        
+        try {
+          const FALLBACK_CDN_URL = 'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.wasm';
+          
+          const initSqlJs = (await import('sql.js')).default;
+          SQL = await initSqlJs({
+            locateFile: file => FALLBACK_CDN_URL
+          });
+          
+          setLoadingMessage("SQL.js initialized with fallback!");
+        } catch (secondErr) {
+          console.error("Fatal error initializing SQL.js:", secondErr);
+          throw new Error("Could not initialize SQL.js. Please reload or try a different browser.");
         }
-        
-        const actors = {};
-        let processedCount = 0;
-        const totalActors = actorSnapshot.size;
-        
-        setLoadingMessage(`Loading ${totalActors} actors from Firebase...`);
-        
-        for (const doc of actorSnapshot.docs) {
-          const data = doc.data();
-          const actorId = doc.id;
-          
-          const movieCreditsRef = collection(firebaseDb, `actors/${actorId}/movie_credits`);
-          const movieCreditsSnapshot = await getDocs(movieCreditsRef);
-          
-          const movieCredits = movieCreditsSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          }));
-          
-          const tvCreditsRef = collection(firebaseDb, `actors/${actorId}/tv_credits`);
-          const tvCreditsSnapshot = await getDocs(tvCreditsRef);
-          
-          const tvCredits = tvCreditsSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          }));
-          
-          actors[actorId] = {
-            name: data.name,
-            popularity: data.popularity,
-            profile_path: data.profile_path,
-            place_of_birth: data.place_of_birth,
-            regions: data.regions,
-            movie_credits: movieCredits,
-            tv_credits: tvCredits
-          };
-          
-          processedCount++;
-          const progressPercentage = 30 + (processedCount / totalActors) * 60;
-          setLoadingProgress(Math.round(progressPercentage));
-        }
-        
-        console.log(`Successfully loaded data from Firebase with ${Object.keys(actors).length} actors`);
-        return actors;
-      } catch (error) {
-        console.warn("Firebase error, falling back to SQLite:", error);
-        return null;
-      }
-    }
-    
-    async function loadFromSQLite() {
-      const SQL = await initSqlJs({
-        locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
-      });
-      
-      setLoadingProgress(50);
-      const dbFile = await fetch(`/actors_${settings.region}.db`);
-      setLoadingProgress(70);
-      
-      if (!dbFile.ok) {
-        throw new Error(`Failed to load actor database: ${dbFile.status} ${dbFile.statusText}`);
       }
       
-      const buffer = await dbFile.arrayBuffer();
-      setLoadingProgress(80);
+      let response = null;
+      let dataSourceName = '';
       
-      const sqlDb = new SQL.Database(new Uint8Array(buffer));
-      setLoadingProgress(90);
+      try {
+        setLoadingMessage("Checking for local database...");
+        response = await fetch(DB_URLS.LOCAL);
+        if (response.ok) {
+          dataSourceName = 'local';
+          setLoadingMessage("Loading from local database...");
+        }
+      } catch (err) {
+        console.log("Local database not found, trying GitHub...");
+      }
+      
+      if (!response || !response.ok) {
+        try {
+          setLoadingMessage("Loading from GitHub...");
+          response = await fetch(DB_URLS.GITHUB);
+          if (response.ok) {
+            dataSourceName = 'github';
+          }
+        } catch (err) {
+          console.log("GitHub database not found either");
+        }
+      }
+      
+      if (!response || !response.ok) {
+        try {
+          setLoadingMessage("Checking for connections database...");
+          response = await fetch(DB_URLS.CONNECTION_DB);
+          if (response.ok) {
+            dataSourceName = 'connection_local';
+            setLoadingMessage("Loading from connections database...");
+          }
+        } catch (err) {
+          console.log("Local connections database not found, trying GitHub...");
+        }
+      }
+      
+      if (!response || !response.ok) {
+        try {
+          setLoadingMessage("Loading connections database from GitHub...");
+          response = await fetch(DB_URLS.GITHUB_CONNECTION_DB);
+          if (response.ok) {
+            dataSourceName = 'connection_github';
+          }
+        } catch (err) {
+          console.log("No database found at any location");
+          throw new Error("Could not find actor database at any location");
+        }
+      }
+      
+      if (!response || !response.ok) {
+        throw new Error("Could not load actor database");
+      }
+      
+      setLoadingMessage(`Loading actors from ${dataSourceName}...`);
+      setLoadingProgress(20);
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const uInt8Array = new Uint8Array(arrayBuffer);
+      
+      const db = new SQL.Database(uInt8Array);
+      setLoadingMessage("Processing actor data...");
+      setLoadingProgress(40);
+      
+      const actorQuery = dataSourceName.includes('connection') 
+        ? `SELECT * FROM actors WHERE id IN (
+             SELECT actor_id FROM actor_regions WHERE region = '${settings.region}'
+           )`
+        : `SELECT a.* FROM actors a
+           JOIN actor_regions ar ON a.id = ar.actor_id
+           WHERE ar.region = '${settings.region}'`;
+      
+      const actorResult = db.exec(actorQuery);
+      
+      if (!actorResult[0] || !actorResult[0].values) {
+        throw new Error(`No actors found for region ${settings.region}`);
+      }
+      
+      setLoadingMessage(`Found ${actorResult[0].values.length} actors for ${settings.region}. Loading credits...`);
+      setLoadingProgress(60);
       
       const actors = {};
-      const actorsResults = sqlDb.exec(`SELECT id, name, popularity, profile_path, place_of_birth FROM actors`);
+      const columns = actorResult[0].columns;
       
-      if (actorsResults.length === 0 || actorsResults[0].values.length === 0) {
-        throw new Error("No actor data found in database");
-      }
-      
-      for (const [id, name, popularity, profile_path, place_of_birth] of actorsResults[0].values) {
-        const actorId = id.toString();
+      for (const row of actorResult[0].values) {
+        const actor = {};
         
-        const regionsResult = sqlDb.exec(`SELECT region FROM actor_regions WHERE actor_id = ${id}`);
-        const regions = regionsResult[0]?.values.map(row => row[0]) || [];
+        columns.forEach((col, idx) => {
+          actor[col] = row[idx];
+        });
         
-        const movieCreditsResult = sqlDb.exec(`
-          SELECT id, title, character, popularity, release_date, poster_path, is_mcu 
-          FROM movie_credits 
-          WHERE actor_id = ${id}
-        `);
-        
-        const movieCredits = movieCreditsResult[0]?.values.map(
-          ([id, title, character, popularity, release_date, poster_path, is_mcu]) => ({
-            id, 
-            title, 
-            character, 
-            popularity, 
-            release_date, 
-            poster_path,
-            is_mcu: !!is_mcu
-          })
-        ) || [];
-        
-        const tvCreditsResult = sqlDb.exec(`
-          SELECT id, name, character, popularity, first_air_date, poster_path, is_mcu 
-          FROM tv_credits 
-          WHERE actor_id = ${id}
-        `);
-        
-        const tvCredits = tvCreditsResult[0]?.values.map(
-          ([id, name, character, popularity, first_air_date, poster_path, is_mcu]) => ({
-            id, 
-            name, 
-            character, 
-            popularity, 
-            first_air_date, 
-            poster_path,
-            is_mcu: !!is_mcu
-          })
-        ) || [];
+        const actorId = actor.id.toString();
         
         actors[actorId] = {
-          name,
-          popularity,
-          profile_path,
-          place_of_birth,
-          regions,
-          movie_credits: movieCredits,
-          tv_credits: tvCredits
+          ...actor,
+          movie_credits: [],
+          tv_credits: []
         };
       }
       
-      console.log(`Successfully loaded data from SQLite with ${Object.keys(actors).length} actors`);
-      return actors;
-    }
-    
-    async function loadActorData() {
-      try {
-        setLoading(true);
-        setLoadingProgress(10);
+      setLoadingMessage("Loading movie credits...");
+      const movieQuery = `
+        SELECT * FROM movie_credits 
+        WHERE actor_id IN (
+          SELECT id FROM actors WHERE id IN (
+            SELECT actor_id FROM actor_regions WHERE region = '${settings.region}'
+          )
+        )
+      `;
+      
+      const movieResult = db.exec(movieQuery);
+      
+      if (movieResult[0] && movieResult[0].values) {
+        const movieColumns = movieResult[0].columns;
         
-        const firebaseData = await loadFromFirebase();
-        
-        if (firebaseData) {
-          setActorData(firebaseData);
-          setLoadingProgress(100);
-          setTimeout(() => setLoading(false), 500);
-          return;
+        for (const row of movieResult[0].values) {
+          const credit = {};
+          
+          movieColumns.forEach((col, idx) => {
+            credit[col] = row[idx];
+          });
+          
+          const actorId = credit.actor_id.toString();
+          
+          if (actors[actorId]) {
+            actors[actorId].movie_credits.push(credit);
+          }
         }
-        
-        const sqliteData = await loadFromSQLite();
-        setActorData(sqliteData);
-        
-        setLoadingProgress(100);
-        setTimeout(() => setLoading(false), 500);
-      } catch (error) {
-        console.error("Error loading actor data:", error);
-        setError(error.message);
-        setLoading(false);
       }
+      
+      if (settings.difficulty === 'hard') {
+        setLoadingMessage("Loading TV credits for hard mode...");
+        
+        const tvQuery = `
+          SELECT * FROM tv_credits 
+          WHERE actor_id IN (
+            SELECT id FROM actors WHERE id IN (
+              SELECT actor_id FROM actor_regions WHERE region = '${settings.region}'
+            )
+          )
+        `;
+        
+        const tvResult = db.exec(tvQuery);
+        
+        if (tvResult[0] && tvResult[0].values) {
+          const tvColumns = tvResult[0].columns;
+          
+          for (const row of tvResult[0].values) {
+            const credit = {};
+            
+            tvColumns.forEach((col, idx) => {
+              credit[col] = row[idx];
+            });
+            
+            const actorId = credit.actor_id.toString();
+            
+            if (actors[actorId]) {
+              actors[actorId].tv_credits.push(credit);
+            }
+          }
+        }
+      }
+      
+      setLoadingMessage("Processing data...");
+      setLoadingProgress(80);
+      
+      const filteredActors = {};
+      for (const [id, actor] of Object.entries(actors)) {
+        if (actor.movie_credits.length >= 3) {
+          filteredActors[id] = actor;
+        }
+      }
+      
+      const dataWithMetadata = {
+        ...filteredActors,
+        _timestamp: new Date().getTime(),
+        _dataSource: dataSourceName
+      };
+      
+      try {
+        setLoadingMessage("Caching data for future use...");
+        localStorage.setItem(cacheKey, JSON.stringify(dataWithMetadata));
+      } catch (err) {
+        console.warn("Failed to cache data:", err);
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key?.startsWith('actor-data-') && key !== cacheKey) {
+              localStorage.removeItem(key);
+            }
+          }
+          localStorage.setItem(cacheKey, JSON.stringify(dataWithMetadata));
+        } catch (clearErr) {
+          console.error("Cannot store data in localStorage even after clearing:", clearErr);
+        }
+      }
+      
+      setDataSource(dataSourceName);
+      setActorData(filteredActors);
+      setLoadingProgress(100);
+      setLoadingMessage("Actor data loaded and cached successfully!");
+      setLoadingProgress(80);
+      setLoadingMessage("Data loaded! Selecting actors for your game...");
+      
+      return true;
+    } catch (error) {
+      console.error("Error loading actor data:", error);
+      console.error("Stack trace:", error.stack);
+      setError(`Failed to load actor data: ${error.message}`);
+      setLoading(false);
+      setSelectingActors(false);
+      return false;
     }
+  }, [settings.region, settings.difficulty, selectActorsWithValidPath, selectingActors]);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const success = await loadFromSqlite();
+        
+        if (success && !selectingActors) {
+          // Wait a moment before selecting actors to allow state updates to complete
+          setTimeout(() => {
+            selectActorsWithValidPath();
+          }, 500);
+        }
+      } catch (err) {
+        console.error("Error in data loading flow:", err);
+        setError(`Failed to load: ${err.message}`);
+        setLoading(false);
+        setSelectingActors(false);
+      }
+    };
     
-    loadActorData();
-  }, [settings.region]);
+    if (loading && !actorData && !selectingActors) {
+      loadData();
+    }
+  }, [loadFromSqlite, selectActorsWithValidPath, loading, actorData, selectingActors]);
+
+  useEffect(() => {
+    if (actorData && loading && loadingProgress >= 95) {
+      const safetyTimer = setTimeout(() => {
+        console.log("Safety timer forcing game to start");
+        
+        // Force game to playing state if it gets stuck
+        if (loading) {
+          setLoading(false);
+          
+          // If we have actors selected but game won't start
+          if (startActor && targetActor) {
+            setGamePhase('playing');
+          } else {
+            // Emergency actor selection
+            const actors = Object.entries(actorData);
+            if (actors.length >= 2) {
+              const randomStart = actors[Math.floor(Math.random() * actors.length)][1];
+              const randomTarget = actors[Math.floor(Math.random() * actors.length)][1];
+              
+              setStartActor({
+                id: randomStart.id,
+                ...randomStart
+              });
+              
+              setTargetActor({
+                id: randomTarget.id,
+                ...randomTarget
+              });
+              
+              setGamePhase('playing');
+            }
+          }
+          
+          setSelectingActors(false);
+        }
+      }, 8000);
+      
+      return () => clearTimeout(safetyTimer);
+    }
+  }, [actorData, loading, loadingProgress, startActor, targetActor]);
+
+  // Add this effect to force the game to start if it gets stuck
+  useEffect(() => {
+    if (actorData && loading && loadingProgress >= 80) {
+      // Add a safety timeout to guarantee the game starts
+      const safetyTimer = setTimeout(() => {
+        console.log("Safety timeout triggered - forcing game to start");
+        
+        if (loading && actorData) {
+          // Get any two popular actors
+          const actors = Object.entries(actorData)
+            .filter(([_, actor]) => actor.profile_path)
+            .sort((a, b) => b[1].popularity - a[1].popularity)
+            .slice(0, 20);
+          
+          if (actors.length >= 2) {
+            const startIndex = Math.floor(Math.random() * Math.min(10, actors.length));
+            const targetIndex = Math.floor(Math.random() * Math.min(10, actors.length));
+            
+            const startActorData = {
+              id: actors[startIndex][0],
+              ...actors[startIndex][1]
+            };
+            
+            const targetActorData = {
+              id: actors[targetIndex][0],
+              ...actors[targetIndex][1]
+            };
+            
+            console.log(`Emergency selection: ${startActorData.name} and ${targetActorData.name}`);
+            
+            // Force all state updates
+            setStartActor(startActorData);
+            setTargetActor(targetActorData);
+            setGamePhase('playing');
+            setLoading(false);
+            setSelectingActors(false);
+          } else {
+            setError("Not enough actors available. Try a different region.");
+            setLoading(false);
+            setSelectingActors(false);
+          }
+        }
+      }, 5000); // 5 second safety timeout
+      
+      return () => clearTimeout(safetyTimer);
+    }
+  }, [actorData, loading, loadingProgress]);
+
+  // Add this effect to ensure game progress after loading
+  useEffect(() => {
+    // Safety timeout - force game to start if stuck at 100% loading
+    if (actorData && loading && loadingProgress >= 95) {
+      const safetyTimer = setTimeout(() => {
+        console.log("Safety timer forcing game to start");
+        
+        if (loading) {
+          if (startActor && targetActor) {
+            setGamePhase('playing');
+            setLoading(false);
+            setSelectingActors(false);
+          } else {
+            // Emergency actor selection from actorData
+            const actors = Object.entries(actorData);
+            if (actors.length >= 2) {
+              const start = actors[Math.floor(Math.random() * actors.length)][1];
+              const target = actors[Math.floor(Math.random() * actors.length)][1];
+              
+              setStartActor({
+                id: start.id,
+                name: start.name || "Unknown Actor",
+                profile_path: start.profile_path,
+                type: 'actor'
+              });
+              
+              setTargetActor({
+                id: target.id, 
+                name: target.name || "Unknown Actor",
+                profile_path: target.profile_path,
+                type: 'actor'
+              });
+              
+              setGamePhase('playing');
+              setLoading(false);
+              setSelectingActors(false);
+            }
+          }
+        }
+      }, 8000); // 8 seconds safety timeout
+      
+      return () => clearTimeout(safetyTimer);
+    }
+  }, [actorData, loading, loadingProgress, startActor, targetActor]);
 
   if (loading) {
     return (
@@ -576,6 +819,11 @@ function ActorGame({ settings, onReset }) {
           ></div>
         </div>
         <div className="loading-text">{loadingMessage}</div>
+        {dataSource && (
+          <div className="data-source-info">
+            Data source: {dataSource}
+          </div>
+        )}
       </div>
     );
   }
@@ -635,6 +883,7 @@ function ActorGame({ settings, onReset }) {
           startActor={startActor}
           targetActor={targetActor}
           onSelection={handleSelection}
+          onComplete={handlePathComplete} // Add this prop
         />
       </div>
       

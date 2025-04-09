@@ -25,7 +25,7 @@ PROFILE_SIZE = "w185"
 POSTER_SIZE = "w342"
 
 # How many pages of popular actors to fetch
-TOTAL_PAGES = 100
+TOTAL_PAGES = 1000
 
 # Expanded region approach
 # Create regions dictionary dynamically with all countries

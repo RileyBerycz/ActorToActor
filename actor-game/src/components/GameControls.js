@@ -12,7 +12,8 @@ function GameControls({
   gamePhase,
   startActor,
   targetActor,
-  onSelection
+  onSelection,
+  onComplete
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -41,6 +42,35 @@ function GameControls({
     }
   }, [gamePhase, startActor, path.length, onSelection]);
 
+  // Add this debugging function to help identify shared movies
+  useEffect(() => {
+    // Only run this in development to help with debugging
+    if (process.env.NODE_ENV === 'development' && startActor && targetActor && actorData) {
+      console.log("Checking for direct connections between actors...");
+      
+      const startActorData = actorData[startActor.id];
+      const targetActorData = actorData[targetActor.id];
+      
+      if (startActorData && targetActorData) {
+        // Get movie IDs for start actor
+        const startMovieIds = new Set(
+          startActorData.movie_credits.map(m => m.id)
+        );
+        
+        // Find shared movies
+        const sharedMovies = targetActorData.movie_credits.filter(
+          m => startMovieIds.has(m.id)
+        );
+        
+        if (sharedMovies.length > 0) {
+          console.log("Found shared movies:", sharedMovies.map(m => m.title || m.name));
+        } else {
+          console.log("No shared movies found between the actors");
+        }
+      }
+    }
+  }, [startActor, targetActor, actorData]);
+
   // Handle search input change
   const handleSearch = (query) => {
     setSearchQuery(query);
@@ -64,11 +94,18 @@ function GameControls({
       const matchingActors = Object.entries(actorData)
         .filter(([actorId, actor]) => {
           // Check if actor was in this movie
-          const wasInMovie = actor.movie_credits.some(credit => credit.id === lastMovie.id) ||
-            (settings.difficulty === 'hard' ? actor.tv_credits.some(credit => credit.id === lastMovie.id) : false);
+          const wasInMovie = actor.movie_credits.some(credit => 
+            credit.id === lastMovie.id
+          ) || (settings.difficulty === 'hard' && actor.tv_credits ? 
+            actor.tv_credits.some(credit => credit.id === lastMovie.id) : false);
           
-          // Don't show actors already in the path
-          const alreadyInPath = path.some(item => item.type === 'actor' && item.id === actorId);
+          // Include the target actor if they were in this movie!
+          const isTargetActor = targetActor && actorId === targetActor.id && wasInMovie;
+          
+          // Don't show actors already in the path EXCEPT the target actor if valid
+          const alreadyInPath = path.some(item => 
+            item.type === 'actor' && item.id === actorId && !isTargetActor
+          );
           
           // Match name to query
           const nameMatches = actor.name.toLowerCase().includes(lowerQuery);
@@ -78,16 +115,16 @@ function GameControls({
         .map(([id, actor]) => ({
           id,
           type: 'actor',
-          name: actor.name,
+          name: actor.name || 'Unknown Actor',
           profile_path: actor.profile_path,
-          popularity: actor.popularity
+          popularity: actor.popularity || 0
         }))
         .sort((a, b) => b.popularity - a.popularity)
         .slice(0, 10);
       
       setSearchResults(matchingActors);
     } else {
-      // Search for movies that the last actor was in
+      // Logic for searching movies
       const lastActor = path.length > 0 ? path[path.length - 1] : startActor;
       
       if (!lastActor || (lastActor.type !== 'actor' && !startActor)) {
@@ -111,16 +148,16 @@ function GameControls({
       // Filter by query and not already in path
       const matchingCredits = credits
         .filter(credit => {
-          const title = credit.title || credit.name;
+          const title = credit.title || credit.name || '';
           const alreadyInPath = path.some(item => item.type === 'movie' && item.id === credit.id);
           return !alreadyInPath && title.toLowerCase().includes(lowerQuery);
         })
         .map(credit => ({
           id: credit.id,
-          type: 'movie',
-          title: credit.title || credit.name,
+          type: 'movie',  // Always set type to 'movie' for consistency
+          title: credit.title || credit.name || 'Unknown Title',
           poster_path: credit.poster_path,
-          popularity: credit.popularity
+          popularity: credit.popularity || 0
         }))
         .sort((a, b) => b.popularity - a.popularity)
         .slice(0, 10);
@@ -170,14 +207,25 @@ function GameControls({
     }
   };
 
-  // Handle selection from search results
+  // Fix handleSelectResult to properly check for win condition
   const handleSelectResult = (result) => {
-    if (settings.difficulty === 'easy' && result.type === 'actor') {
-      // In easy mode, handle actor selections specially
-      handleEasyModeActorSelection(result);
-    } else {
-      // Normal handling for other modes
-      onSelection(result);
+    // Add logging to debug
+    console.log("Selected result:", result);
+    console.log("Target actor:", targetActor);
+    
+    // First add the selection to the path
+    onSelection(result);
+    
+    // Check if this selection completes the path to target actor
+    if (result.type === 'actor' && targetActor && 
+      String(result.id) === String(targetActor.id)) {
+      // We found the target! Trigger win condition after a short delay
+      console.log("TARGET ACTOR FOUND! Path complete.");
+      setTimeout(() => {
+        if (typeof onComplete === 'function') {
+          onComplete([...path, result]);
+        }
+      }, 500);
     }
     
     setSearchQuery('');
