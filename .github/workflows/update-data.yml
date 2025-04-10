@@ -23,13 +23,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests firebase-admin
+          pip install requests pycountry pandas # Added pandas for build_actor_map.py support
 
       - name: Update actor data
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          ENABLE_FIREBASE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: python update_actor_data.py
 
       - name: Commit and push if changed

@@ -660,8 +660,16 @@ class ActorToActorApp:
 
     # Core functionality methods
     def search_actors_for(self, target_type):
-        self.target_type = target_type
-        self.search_actors()
+        if target_type == "start":
+            name = self.start_actor_entry.get().strip()
+        else:
+            name = self.target_actor_entry.get().strip()
+        
+        if not name:
+            messagebox.showwarning("Missing Input", "Please enter an actor name")
+            return
+
+        self._show_actor_search_dialog(name, target_type)
     
     def search_actors(self):
         # Creates a dialog for searching actors
