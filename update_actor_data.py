@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import os
 import requests
 import json
@@ -26,6 +27,9 @@ POSTER_SIZE = "w342"
 
 # How many pages of popular actors to fetch
 TOTAL_PAGES = 1000
+
+# Minimum popularity for movie/TV credits
+MIN_CREDIT_POPULARITY = 1.0
 
 # Expanded region approach
 # Create regions dictionary dynamically with all countries
@@ -124,7 +128,79 @@ def make_api_request(url, params, max_retries=5):
     print(f"Failed after {max_retries} retries. Skipping this request.")
     return None
 
-# Database setup function - create a single database
+def calculate_years_active(movie_credits, tv_credits):
+    """Calculate how many years an actor has been active based on their credits"""
+    all_dates = []
+    
+    # Extract movie dates
+    for movie in movie_credits:
+        date_str = movie.get("release_date")
+        if date_str and len(date_str) >= 4:
+            try:
+                year = int(date_str[:4])
+                if 1900 <= year <= 2030:  # Basic validation
+                    all_dates.append(year)
+            except ValueError:
+                pass
+    
+    # Extract TV dates
+    for tv in tv_credits:
+        date_str = tv.get("first_air_date")
+        if date_str and len(date_str) >= 4:
+            try:
+                year = int(date_str[:4])
+                if 1900 <= year <= 2030:  # Basic validation
+                    all_dates.append(year)
+            except ValueError:
+                pass
+    
+    if not all_dates:
+        return 1  # Default to 1 year if no valid dates
+    
+    current_year = time.localtime().tm_year
+    earliest_year = min(all_dates)
+    latest_year = max(all_dates)
+    
+    # Calculate years active (minimum 1 year)
+    years_active = max(1, latest_year - earliest_year + 1)
+    
+    # Cap at reasonable maximum (e.g., 60 years)
+    return min(years_active, 60)
+
+def calculate_credit_popularity(movie_credits, tv_credits):
+    """Calculate average popularity of an actor's credits"""
+    all_popularity_scores = []
+    
+    for movie in movie_credits:
+        pop = movie.get("popularity", 0)
+        if pop > 0:
+            all_popularity_scores.append(pop)
+    
+    for tv in tv_credits:
+        pop = tv.get("popularity", 0)
+        if pop > 0:
+            all_popularity_scores.append(pop)
+    
+    if not all_popularity_scores:
+        return 0
+    
+    return sum(all_popularity_scores) / len(all_popularity_scores)
+
+def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity):
+    """Calculate a more balanced popularity score"""
+    longevity_factor = min(years_active / 10, 1.0)  # Cap at 10 years
+    credits_factor = min(num_credits / 20, 1.0)     # Cap at 20 credits
+    
+    # Balanced formula giving weight to all factors
+    custom_score = (
+        tmdb_popularity * 0.3 +                # Recent popularity (30%)
+        avg_credit_popularity * 0.2 +          # Quality of work (20%) 
+        credits_factor * 25 +                  # Quantity of work (25%)
+        longevity_factor * 25                  # Career longevity (25%)
+    )
+    
+    return custom_score
+
 def setup_database():
     """Create a single SQLite database with region flags"""
     db_path = "actor-game/public/actors.db"
@@ -146,8 +222,11 @@ def setup_database():
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
         popularity REAL,
+        tmdb_popularity REAL,  -- Keep for reference
         profile_path TEXT,
-        place_of_birth TEXT
+        place_of_birth TEXT,
+        years_active INTEGER,
+        credit_count INTEGER
     )
     ''')
     
@@ -155,7 +234,7 @@ def setup_database():
     CREATE TABLE actor_regions (
         actor_id INTEGER,
         region TEXT,
-        popularity_score REAL,  # Add this column
+        popularity_score REAL,
         PRIMARY KEY (actor_id, region),
         FOREIGN KEY (actor_id) REFERENCES actors (id)
     )
@@ -194,14 +273,13 @@ def setup_database():
     conn.commit()
     return conn, cursor
 
-# Add this helper function:
 def normalize_image_path(path):
     """Ensure image path has leading slash if it exists"""
     if not path:
         return ""
     return path if path.startswith('/') else f"/{path}"
 
-# Set up single database instead of multiple region-specific ones
+# Set up single database
 conn, cursor = setup_database()
 
 # Track processed actors to avoid duplicates
@@ -308,83 +386,6 @@ def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
     
     return qualified_regions, avg_scores
 
-def assign_countries_to_actor(release_data):
-    """Maps all countries where an actor's work was released"""
-    country_scores = {}
-    
-    # Process all countries in release data
-    for movie_id, countries in release_data.items():
-        for country_code in countries:
-            if country_code not in country_scores:
-                country_scores[country_code] = 0
-            country_scores[country_code] += 1
-    
-    # Apply thresholds based on country size/market
-    qualified_countries = []
-    for country, score in country_scores.items():
-        # Get country-specific threshold from configuration
-        threshold = get_country_threshold(country)
-        if score >= threshold:
-            qualified_countries.append(country)
-    
-    return qualified_countries
-
-def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
-    """Determine which regions an actor is popular in with tiered approach"""
-    # Calculate base regional scores
-    regional_scores, avg_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
-    
-    # Get overall popularity from TMDB
-    overall_popularity = actor_data.get("popularity", 0)
-    
-    # Global tier assignments based on overall popularity
-    if overall_popularity >= 25:  # Mega stars
-        if "GLOBAL" not in regional_scores:
-            regional_scores.append("GLOBAL")
-    
-    # Franchise analysis - actors in major franchises get wider recognition
-    us_franchise_keywords = ["Marvel", "Star Wars", "Harry Potter", "Mission", 
-                            "Fast & Furious", "Jurassic", "Batman", "Superman"]
-    
-    mcu_credits = sum(1 for m in movie_credits if m.get("is_mcu", False))
-    franchise_count = mcu_credits
-    
-    # Check for other franchises
-    for movie in movie_credits:
-        title = movie.get("title", "")
-        for keyword in us_franchise_keywords:
-            if keyword in title:
-                franchise_count += 1
-                break
-    
-    # If they're in multiple franchises, add key regions
-    if franchise_count >= 2:
-        if "US" not in regional_scores:
-            regional_scores.append("US")
-        if "UK" not in regional_scores:
-            regional_scores.append("UK")
-    
-    # Special case for actors in Asian entertainment industries
-    asian_keywords = ["K-drama", "C-drama", "Bollywood", "anime", "manga"]
-    asian_content = False
-    
-    for tv in tv_credits:
-        tv_name = tv.get("name", "").lower()
-        for keyword in asian_keywords:
-            if keyword.lower() in tv_name:
-                asian_content = True
-                break
-    
-    if asian_content and "ASIA" not in regional_scores:
-        regional_scores.append("ASIA")
-    
-    # Make sure actor is assigned to at least one region
-    if not regional_scores:
-        # Fallback to region with most credits
-        regional_scores.append("OTHER")
-    
-    return regional_scores, avg_scores
-
 def get_movie_release_data(movie_id):
     """Get release data for a movie by country with caching"""
     if movie_id in release_cache['movie']:
@@ -447,6 +448,62 @@ def get_tv_availability_data(tv_id):
     
     return countries
 
+def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
+    """Determine which regions an actor is popular in with tiered approach"""
+    # Calculate base regional scores
+    regional_scores, avg_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
+    
+    # Get custom popularity score (renamed from overall_popularity)
+    actor_popularity = actor_data.get("popularity", 0)
+    
+    # Global tier assignments based on custom popularity
+    if actor_popularity >= 25:  # Mega stars
+        if "GLOBAL" not in regional_scores:
+            regional_scores.append("GLOBAL")
+    
+    # Franchise analysis - actors in major franchises get wider recognition
+    us_franchise_keywords = ["Marvel", "Star Wars", "Harry Potter", "Mission", 
+                           "Fast & Furious", "Jurassic", "Batman", "Superman"]
+    
+    mcu_credits = sum(1 for m in movie_credits if m.get("is_mcu", False))
+    franchise_count = mcu_credits
+    
+    # Check for other franchises
+    for movie in movie_credits:
+        title = movie.get("title", "")
+        for keyword in us_franchise_keywords:
+            if keyword in title:
+                franchise_count += 1
+                break
+    
+    # If they're in multiple franchises, add key regions
+    if franchise_count >= 2:
+        if "US" not in regional_scores:
+            regional_scores.append("US")
+        if "UK" not in regional_scores:
+            regional_scores.append("UK")
+    
+    # Special case for actors in Asian entertainment industries
+    asian_keywords = ["K-drama", "C-drama", "Bollywood", "anime", "manga"]
+    asian_content = False
+    
+    for tv in tv_credits:
+        tv_name = tv.get("name", "").lower()
+        for keyword in asian_keywords:
+            if keyword.lower() in tv_name:
+                asian_content = True
+                break
+    
+    if asian_content and "ASIA" not in regional_scores:
+        regional_scores.append("ASIA")
+    
+    # Make sure actor is assigned to at least one region
+    if not regional_scores:
+        # Fallback to region with most credits
+        regional_scores.append("OTHER")
+    
+    return regional_scores, avg_scores
+
 # Main data fetching loop
 for page in range(1, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
@@ -460,7 +517,7 @@ for page in range(1, TOTAL_PAGES + 1):
     
     if not data:
         print(f"Failed to fetch page {page}. Trying again later.")
-        time.sleep(30)  # Wait longer before retrying the page
+        time.sleep(30)
         continue
     
     for person in data.get("results", []):
@@ -473,11 +530,8 @@ for page in range(1, TOTAL_PAGES + 1):
         processed_actors.add(actor_id)
         
         actor_name = person["name"]
-        popularity = person.get("popularity", 0)
+        tmdb_popularity = person.get("popularity", 0)
         profile_path = normalize_image_path(person.get("profile_path", ""))
-        
-        # Construct profile image URL
-        profile_image_url = f"{IMAGE_BASE_URL}{PROFILE_SIZE}{profile_path}" if profile_path else ""
         
         print(f"Fetching data for {actor_name} (ID: {actor_id})")
         
@@ -498,7 +552,7 @@ for page in range(1, TOTAL_PAGES + 1):
             if place_of_birth is None:
                 place_of_birth = "Unknown"
         
-        # Step 2: Get movie credits
+        # Step 2: Get movie credits - THRESHOLD CHANGED TO 1.0
         credits_params = {"api_key": TMDB_API_KEY}
         credits_data = make_api_request(ACTOR_MOVIE_CREDITS_URL_TEMPLATE.format(actor_id), credits_params)
         
@@ -506,13 +560,23 @@ for page in range(1, TOTAL_PAGES + 1):
         
         if credits_data:
             for credit in credits_data.get("cast", []):
-                # Only add movies above popularity threshold
-                if credit.get("popularity", 0) > 1.5:
+                # Only add movies above popularity threshold - CHANGED FROM 1.5 TO 1.0
+                if credit.get("popularity", 0) >= MIN_CREDIT_POPULARITY:
                     movie_id = credit["id"]
                     poster_path = normalize_image_path(credit.get("poster_path", ""))
                     
-                    # Construct poster image URL
-                    poster_image_url = f"{IMAGE_BASE_URL}{POSTER_SIZE}{poster_path}" if poster_path else ""
+                    # Get character info
+                    character = credit.get("character", "")
+                    
+                    # Check if character is self-appearance
+                    if character.lower() in ['self', 'himself', 'herself']:
+                        # Skip self appearances
+                        continue
+                        
+                    # Skip documentaries
+                    title = credit.get("title", "").lower()
+                    if any(keyword in title for keyword in ['documentary', 'behind the scenes']):
+                        continue
                     
                     # Check MCU status from cache first
                     is_mcu = False
@@ -539,30 +603,40 @@ for page in range(1, TOTAL_PAGES + 1):
                     movie_credits.append({
                         "id": movie_id,
                         "title": credit.get("title", ""),
-                        "character": credit.get("character", ""),
+                        "character": character,
                         "popularity": credit.get("popularity", 0),
                         "release_date": credit.get("release_date", ""),
                         "poster_path": poster_path,
                         "is_mcu": is_mcu
                     })
                     
-                    # More controlled rate limiting
+                    # Rate limiting
                     if movie_id not in mcu_cache['movie']:
-                        time.sleep(0.25)  # 250ms between new movie lookups
+                        time.sleep(0.25)
         
-        # Step 3: Get TV credits
+        # Step 3: Get TV credits - THRESHOLD CHANGED TO 1.0
         tv_credits_params = {"api_key": TMDB_API_KEY}
         tv_credits_data = make_api_request(ACTOR_TV_CREDITS_URL_TEMPLATE.format(actor_id), tv_credits_params)
         
         tv_credits = []
         if tv_credits_data:
             for credit in tv_credits_data.get("cast", []):
-                if credit.get("popularity", 0) > 1.5:
+                if credit.get("popularity", 0) >= MIN_CREDIT_POPULARITY:
                     tv_id = credit["id"]
                     poster_path = normalize_image_path(credit.get("poster_path", ""))
                     
-                    # Construct poster image URL
-                    poster_image_url = f"{IMAGE_BASE_URL}{POSTER_SIZE}{poster_path}" if poster_path else ""
+                    # Get character info
+                    character = credit.get("character", "")
+                    
+                    # Skip if the actor is playing themselves
+                    if character.lower() in ['self', 'himself', 'herself']:
+                        continue
+                    
+                    # Skip if the TV title contains keywords suggesting a non-scripted format
+                    tv_name = credit.get("name", "").lower()
+                    excluded_keywords = ['talk', 'game', 'reality', 'news', 'award']
+                    if any(keyword in tv_name for keyword in excluded_keywords):
+                        continue
                     
                     # Check MCU status from cache first
                     is_mcu = False
@@ -576,14 +650,9 @@ for page in range(1, TOTAL_PAGES + 1):
                         if tv_data:
                             production_companies = tv_data.get("production_companies", [])
                             
-                            # Check if Marvel Studios is a production company
+                            # Check for Marvel studios or television
                             for company in production_companies:
-                                if "Marvel Studios" in company.get("name", ""):
-                                    is_mcu = True
-                                    break
-                                
-                                # Also check for Marvel Television
-                                if "Marvel Television" in company.get("name", ""):
+                                if "Marvel" in company.get("name", ""):
                                     is_mcu = True
                                     break
                             
@@ -593,53 +662,74 @@ for page in range(1, TOTAL_PAGES + 1):
                     tv_credits.append({
                         "id": tv_id,
                         "name": credit.get("name", ""),
-                        "character": credit.get("character", ""),
+                        "character": character,
                         "popularity": credit.get("popularity", 0),
                         "first_air_date": credit.get("first_air_date", ""),
                         "poster_path": poster_path,
                         "is_mcu": is_mcu
                     })
                     
-                    # More controlled rate limiting
+                    # Rate limiting
                     if tv_id not in mcu_cache['tv']:
-                        time.sleep(0.25)  # 250ms between new TV lookups
+                        time.sleep(0.25)
         
-        # Calculate regional popularity
+        # Calculate number of credits
+        num_credits = len(movie_credits) + len(tv_credits)
+        
+        # Calculate years active
+        years_active = calculate_years_active(movie_credits, tv_credits)
+        
+        # Calculate average credit popularity
+        avg_credit_popularity = calculate_credit_popularity(movie_credits, tv_credits)
+        
+        # Calculate custom popularity score
+        custom_popularity = calculate_custom_popularity(
+            tmdb_popularity, 
+            num_credits,
+            years_active,
+            avg_credit_popularity
+        )
+        
+        print(f"  TMDB Popularity: {tmdb_popularity:.2f}, Custom Popularity: {custom_popularity:.2f}")
+        
+        # Use custom_popularity for all further operations
         actor_regions, avg_scores = assign_actor_to_regions(
-            {"id": actor_id, "name": actor_name, "popularity": popularity},
+            {"id": actor_id, "name": actor_name, "popularity": custom_popularity},
             movie_credits,
             tv_credits
         )
         
-        # Log region assignments for debugging
-        print(f"Assigned {actor_name} to regions: {', '.join(actor_regions)}")
+        print(f"  Assigned {actor_name} to regions: {', '.join(actor_regions)}")
         
-        # Insert data into the database
+        # Insert data into the database with custom popularity as primary metric
         for region in actor_regions:
             # Clean text for SQL
             safe_name = actor_name.replace("'", "''")
             safe_place = place_of_birth.replace("'", "''") if place_of_birth else "Unknown"
             
-            # Insert actor data
+            # Insert actor data - using custom_popularity as the main popularity field
             cursor.execute(f'''
             INSERT OR REPLACE INTO actors 
-            (id, name, popularity, profile_path, place_of_birth)
+            (id, name, popularity, tmdb_popularity, profile_path, place_of_birth, years_active, credit_count)
             VALUES (
                 {actor_id}, 
                 '{safe_name}', 
-                {popularity}, 
+                {custom_popularity},
+                {tmdb_popularity}, 
                 '{profile_path}', 
-                '{safe_place}'
+                '{safe_place}',
+                {years_active},
+                {num_credits}
             )
             ''')
             
-            # Insert region data for this actor
+            # Insert region data for this actor - using custom popularity
             cursor.execute(f"""
             INSERT OR REPLACE INTO actor_regions (actor_id, region, popularity_score)
-            VALUES ({actor_id}, '{region}', {avg_scores[region]})
+            VALUES ({actor_id}, '{region}', {custom_popularity})
             """)
             
-            # Insert movie credits (with is_mcu flag)
+            # Insert movie credits
             for movie in movie_credits:
                 safe_title = movie["title"].replace("'", "''")
                 safe_character = movie["character"].replace("'", "''")
@@ -659,7 +749,7 @@ for page in range(1, TOTAL_PAGES + 1):
                 )
                 ''')
             
-            # Insert TV credits (with is_mcu flag)
+            # Insert TV credits
             for tv in tv_credits:
                 safe_name = tv["name"].replace("'", "''")
                 safe_character = tv["character"].replace("'", "''")
@@ -688,8 +778,9 @@ for page in range(1, TOTAL_PAGES + 1):
     time.sleep(1)
     print(f"Completed page {page}/{TOTAL_PAGES}")
 
-# Optimize database and close connection
-# Create indexes for better performance
+# Optimize database and create indexes
+print("Creating indexes and optimizing database...")
+cursor.execute("CREATE INDEX idx_actors_popularity ON actors (popularity DESC)")
 cursor.execute("CREATE INDEX idx_movie_credits_actor ON movie_credits (actor_id)")
 cursor.execute("CREATE INDEX idx_movie_credits_mcu ON movie_credits (is_mcu)")
 cursor.execute("CREATE INDEX idx_tv_credits_actor ON tv_credits (actor_id)")
@@ -708,9 +799,13 @@ with open("actor-game/public/data_source_info.json", "w") as f:
     json.dump({
         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "sqlite_complete": True,
+        "popularity_metric": "custom"
     }, f)
 
 print("""
 All data successfully updated:
 - SQLite database saved to GitHub repository
+- Using CUSTOM popularity metric instead of TMDB popularity
+- Filtering out self-appearances in both movies and TV shows
+- Including credits with popularity >= 1.0
 """)

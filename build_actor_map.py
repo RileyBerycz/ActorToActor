@@ -157,9 +157,17 @@ def build_actor_graph(actors, include_tv=True):
     # Create a dictionary mapping each credit ID to the list of actor IDs involved.
     credit_to_actors = {}
     
-    # Process movie credits (all movies assumed to be proper acting projects)
+    # Process movie credits with similar filtering as TV
     for actor_id, actor in tqdm(actors.items(), desc="Processing movie credits"):
         for credit in actor.get('movie_credits', []):
+            character = (credit.get('character') or "").strip().lower()
+            # Skip if the actor is simply playing himself/herself
+            if character in ['self', 'himself', 'herself']:
+                continue
+            # Skip documentaries and similar non-fiction formats
+            movie_title = credit.get('title', '').lower()
+            if any(keyword in movie_title for keyword in ['documentary', 'behind the scenes']):
+                continue
             movie_id = credit['id']
             credit_to_actors.setdefault(movie_id, []).append(actor_id)
     
