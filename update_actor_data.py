@@ -6,6 +6,8 @@ import time
 import sqlite3
 import random
 import pycountry
+import sys
+import datetime
 from requests.exceptions import ConnectionError, Timeout, RequestException
 
 # Retrieve your TMDB API key from environment variables
@@ -30,6 +32,10 @@ TOTAL_PAGES = 1000
 
 # Minimum popularity for movie/TV credits
 MIN_CREDIT_POPULARITY = 1.0
+
+# Add after other constants
+CHECKPOINT_FILE = "actor-game/public/checkpoint.json"
+MAX_RUNTIME_HOURS = 4  # Exit after this many hours to allow clean completion
 
 # Expanded region approach
 # Create regions dictionary dynamically with all countries
@@ -279,234 +285,74 @@ def normalize_image_path(path):
         return ""
     return path if path.startswith('/') else f"/{path}"
 
+def load_checkpoint():
+    """Load previous execution progress from checkpoint file"""
+    if not os.path.exists(CHECKPOINT_FILE):
+        print("No checkpoint file found, starting fresh")
+        return {
+            "last_page": 0,
+            "processed_actors": [],
+            "last_update": None,
+            "completed": False
+        }
+    
+    try:
+        with open(CHECKPOINT_FILE, 'r') as f:
+            checkpoint = json.load(f)
+            print(f"Resuming from page {checkpoint['last_page'] + 1}")
+            return checkpoint
+    except Exception as e:
+        print(f"Error loading checkpoint: {e}")
+        return {
+            "last_page": 0,
+            "processed_actors": [],
+            "last_update": None,
+            "completed": False
+        }
+
+def save_checkpoint(page, processed_actors, completed=False):
+    """Save current progress to checkpoint file"""
+    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
+    
+    checkpoint = {
+        "last_page": page,
+        "processed_actors": list(processed_actors),
+        "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "completed": completed
+    }
+    
+    with open(CHECKPOINT_FILE, 'w') as f:
+        json.dump(checkpoint, f)
+    
+    print(f"Checkpoint saved at page {page}")
+
 # Set up single database
 conn, cursor = setup_database()
 
-# Track processed actors to avoid duplicates
-processed_actors = set()
+# Load checkpoint information
+checkpoint = load_checkpoint()
+start_page = checkpoint.get("last_page", 0) + 1
+processed_actors = set(checkpoint.get("processed_actors", []))
 
-# Cache for movie/TV MCU status to reduce API calls
-mcu_cache = {
-    'movie': {},  # movie_id -> is_mcu
-    'tv': {}      # tv_id -> is_mcu
-}
+# Track start time for runtime limit
+start_time = time.time()
+max_runtime_seconds = MAX_RUNTIME_HOURS * 60 * 60
 
-# Cache for release/availability data to reduce API calls
-release_cache = {
-    'movie': {},  # movie_id -> countries
-    'tv': {}      # tv_id -> countries
-}
-
-def calculate_regional_popularity(actor_id, movie_credits, tv_credits):
-    """Calculate an actor's popularity in different regions based on their work"""
-    region_scores = {region: 0 for region in REGIONS.keys()}
-    region_release_counts = {region: 0 for region in REGIONS.keys()}
-    
-    # Process movie credits
-    for movie in movie_credits:
-        movie_id = movie["id"]
-        movie_popularity = movie["popularity"]
-        
-        # Get regional release data for this movie
-        release_data = get_movie_release_data(movie_id)
-        
-        # For each region, check if the movie was released there and add to popularity
-        for region, info in REGIONS.items():
-            if region == "GLOBAL":
-                # Global score uses overall movie popularity
-                region_scores["GLOBAL"] += movie_popularity
-                region_release_counts["GLOBAL"] += 1
-                continue
-                
-            # Check if movie was released in any of the region's countries
-            released_in_region = False
-            for country in info.get("countries", []):
-                if country in release_data:
-                    released_in_region = True
-                    break
-            
-            if released_in_region:
-                region_scores[region] += movie_popularity
-                region_release_counts[region] += 1
-    
-    # Process TV credits similarly
-    for tv in tv_credits:
-        tv_id = tv["id"]
-        tv_popularity = tv["popularity"]
-        
-        # Get regional availability data for this TV show
-        availability_data = get_tv_availability_data(tv_id)
-        
-        # For each region, check if the TV show was available there
-        for region, info in REGIONS.items():
-            if region == "GLOBAL":
-                # Global score uses overall TV popularity
-                region_scores["GLOBAL"] += tv_popularity
-                region_release_counts["GLOBAL"] += 1
-                continue
-                
-            # Check if TV show was available in any of the region's countries
-            available_in_region = False
-            for country in info.get("countries", []):
-                if country in availability_data:
-                    available_in_region = True
-                    break
-            
-            if available_in_region:
-                region_scores[region] += tv_popularity
-                region_release_counts[region] += 1
-    
-    # Calculate average popularity scores per region
-    avg_scores = {}
-    for region in REGIONS.keys():
-        if region_release_counts[region] > 0:
-            avg_scores[region] = region_scores[region] / region_release_counts[region]
-        else:
-            avg_scores[region] = 0
-    
-    # Determine regions where actor exceeds popularity threshold
-    qualified_regions = []
-    for region, info in REGIONS.items():
-        # For GLOBAL, need a higher threshold and also consider count of credits
-        if region == "GLOBAL":
-            if avg_scores[region] >= info["threshold"] and region_release_counts[region] >= 5:
-                qualified_regions.append(region)
-        # For other regions, meet threshold and have at least 3 releases there
-        elif avg_scores[region] >= info["threshold"] and region_release_counts[region] >= 3:
-            qualified_regions.append(region)
-    
-    # If no regions qualify, add region with highest score
-    if not qualified_regions and region_release_counts:
-        best_region = max(avg_scores.items(), key=lambda x: x[1])[0]
-        qualified_regions.append(best_region)
-    
-    # Always ensure actor is in at least one region
-    if not qualified_regions:
-        qualified_regions.append("OTHER")
-    
-    return qualified_regions, avg_scores
-
-def get_movie_release_data(movie_id):
-    """Get release data for a movie by country with caching"""
-    if movie_id in release_cache['movie']:
-        return release_cache['movie'][movie_id]
-    
-    countries = {}
-    release_url = f"{BASE_URL}/movie/{movie_id}/release_dates"
-    params = {"api_key": TMDB_API_KEY}
-    
-    data = make_api_request(release_url, params)
-    if data and "results" in data:
-        for result in data["results"]:
-            country_code = result.get("iso_3166_1")
-            if country_code:
-                countries[country_code] = True
-    
-    # Cache the result
-    release_cache['movie'][movie_id] = countries
-    
-    # Add delay to avoid rate limiting
-    time.sleep(0.25)
-    
-    return countries
-
-def get_tv_availability_data(tv_id):
-    """Get countries where a TV show was available with caching"""
-    if tv_id in release_cache['tv']:
-        return release_cache['tv'][tv_id]
-    
-    countries = {}
-    
-    # First try content ratings which includes country info
-    ratings_url = f"{BASE_URL}/tv/{tv_id}/content_ratings"
-    params = {"api_key": TMDB_API_KEY}
-    
-    data = make_api_request(ratings_url, params)
-    if data and "results" in data:
-        for result in data["results"]:
-            country_code = result.get("iso_3166_1")
-            if country_code:
-                countries[country_code] = True
-    
-    # If no countries found, try alternative data
-    if not countries:
-        # Check translated info as a proxy for availability
-        translations_url = f"{BASE_URL}/tv/{tv_id}/translations"
-        data = make_api_request(translations_url, params)
-        
-        if data and "translations" in data:
-            for translation in data["translations"]:
-                country = translation.get("iso_3166_1")
-                if country:
-                    countries[country] = True
-    
-    # Cache the result
-    release_cache['tv'][tv_id] = countries
-    
-    # Add delay to avoid rate limiting
-    time.sleep(0.25)
-    
-    return countries
-
-def assign_actor_to_regions(actor_data, movie_credits, tv_credits):
-    """Determine which regions an actor is popular in with tiered approach"""
-    # Calculate base regional scores
-    regional_scores, avg_scores = calculate_regional_popularity(actor_data["id"], movie_credits, tv_credits)
-    
-    # Get custom popularity score (renamed from overall_popularity)
-    actor_popularity = actor_data.get("popularity", 0)
-    
-    # Global tier assignments based on custom popularity
-    if actor_popularity >= 25:  # Mega stars
-        if "GLOBAL" not in regional_scores:
-            regional_scores.append("GLOBAL")
-    
-    # Franchise analysis - actors in major franchises get wider recognition
-    us_franchise_keywords = ["Marvel", "Star Wars", "Harry Potter", "Mission", 
-                           "Fast & Furious", "Jurassic", "Batman", "Superman"]
-    
-    mcu_credits = sum(1 for m in movie_credits if m.get("is_mcu", False))
-    franchise_count = mcu_credits
-    
-    # Check for other franchises
-    for movie in movie_credits:
-        title = movie.get("title", "")
-        for keyword in us_franchise_keywords:
-            if keyword in title:
-                franchise_count += 1
-                break
-    
-    # If they're in multiple franchises, add key regions
-    if franchise_count >= 2:
-        if "US" not in regional_scores:
-            regional_scores.append("US")
-        if "UK" not in regional_scores:
-            regional_scores.append("UK")
-    
-    # Special case for actors in Asian entertainment industries
-    asian_keywords = ["K-drama", "C-drama", "Bollywood", "anime", "manga"]
-    asian_content = False
-    
-    for tv in tv_credits:
-        tv_name = tv.get("name", "").lower()
-        for keyword in asian_keywords:
-            if keyword.lower() in tv_name:
-                asian_content = True
-                break
-    
-    if asian_content and "ASIA" not in regional_scores:
-        regional_scores.append("ASIA")
-    
-    # Make sure actor is assigned to at least one region
-    if not regional_scores:
-        # Fallback to region with most credits
-        regional_scores.append("OTHER")
-    
-    return regional_scores, avg_scores
+print(f"Starting data collection from page {start_page}/{TOTAL_PAGES}")
+print(f"Already processed {len(processed_actors)} actors")
 
 # Main data fetching loop
-for page in range(1, TOTAL_PAGES + 1):
+for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
+    
+    # Check runtime - exit gracefully if we're approaching limit
+    elapsed_seconds = time.time() - start_time
+    if elapsed_seconds > max_runtime_seconds:
+        print(f"Approaching maximum runtime of {MAX_RUNTIME_HOURS} hours. Saving checkpoint and exiting.")
+        save_checkpoint(page - 1, processed_actors)
+        print("Execution will continue in the next workflow run")
+        # Early exit - database will remain valid with partial data
+        sys.exit(0)
     
     # Get page of popular actors
     params = {
@@ -774,9 +620,21 @@ for page in range(1, TOTAL_PAGES + 1):
         # Delay between actors
         time.sleep(0.5)
     
+    # Save checkpoint after each page
+    save_checkpoint(page, processed_actors)
+    
     # Delay between pages
     time.sleep(1)
     print(f"Completed page {page}/{TOTAL_PAGES}")
+
+# Check if we've completed all pages before finalizing
+checkpoint = load_checkpoint()
+if not checkpoint.get('completed', False):
+    print("Data collection is not complete. Will continue in next run.")
+    sys.exit(0)
+
+# Only perform database optimization and final steps when completed
+print("All pages processed. Finalizing database...")
 
 # Optimize database and create indexes
 print("Creating indexes and optimizing database...")

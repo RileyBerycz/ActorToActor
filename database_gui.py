@@ -10,6 +10,7 @@ from PIL import Image, ImageTk
 import io
 import requests
 import webbrowser
+import traceback
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -538,6 +539,9 @@ class ActorToActorApp:
                                             place_of_birth=place_of_birth)
                     actors_loaded = True
                     self.status_var.set(f"Loaded actor data from {actor_db_path}")
+                    
+                    # Now, build common movie/TV connections between actors
+                    self._build_movie_connections(conn)
                 else:
                     self.status_var.set(f"No 'actors' table found in {actor_db_path}")
                 
@@ -545,7 +549,7 @@ class ActorToActorApp:
             else:
                 self.status_var.set("No actors database found")
             
-            # Then load connections from actor_connections.db
+            # Then load pre-computed connections from actor_connections.db
             if 'actor_connections' in self.db_connections:
                 conn_db_path = self.db_connections['actor_connections']['path']
                 self.status_var.set(f"Loading actor connections from {conn_db_path}...")
@@ -560,75 +564,15 @@ class ActorToActorApp:
                     cursor.execute("SELECT start_id, target_id, connection_length, optimal_path, difficulty FROM actor_connections")
                     for start_id, target_id, connection_length, optimal_path, difficulty in cursor.fetchall():
                         if self.graph.has_node(int(start_id)) and self.graph.has_node(int(target_id)):
+                            # Only add these pre-computed connections if we're missing a direct connection
+                            # This ensures pre-computed paths override any incorrect ones
                             self.graph.add_edge(int(start_id), int(target_id), 
                                               connection_length=connection_length,
                                               optimal_path=optimal_path, 
-                                              difficulty=difficulty)
+                                              difficulty=difficulty,
+                                              is_precomputed=True)
                     connections_loaded = True
                     self.status_var.set(f"Loaded connection data from {conn_db_path}")
-                else:
-                    # If no actor_connections table, try alternatives
-                    alt_tables = [t for t in self.db_connections['actor_connections']['tables'] 
-                                 if 'connection' in t.lower() or 'edge' in t.lower()]
-                    
-                    if alt_tables:
-                        alt_table = alt_tables[0]
-                        self.status_var.set(f"Trying alternative connections table: {alt_table}")
-                        
-                        # Get columns for the table to adapt the query
-                        cursor.execute(f"PRAGMA table_info({alt_table})")
-                        columns = [col[1] for col in cursor.fetchall()]
-                        
-                        # Try to map required columns to available columns
-                        req_cols = ['start_id', 'target_id', 'connection_length', 'optimal_path', 'difficulty']
-                        col_map = {}
-                        
-                        for req in req_cols:
-                            # Try exact match or partial match
-                            if req in columns:
-                                col_map[req] = req
-                            else:
-                                matches = [c for c in columns if req.lower() in c.lower()]
-                                if matches:
-                                    col_map[req] = matches[0]
-                                else:
-                                    # Default values if column not found
-                                    col_map[req] = None
-                        
-                        # Must have at least start_id and target_id
-                        if col_map['start_id'] and col_map['target_id']:
-                            query = f"SELECT {col_map['start_id']}, {col_map['target_id']}"
-                            if col_map['connection_length']:
-                                query += f", {col_map['connection_length']}"
-                            else:
-                                query += ", 1"  # Default length
-                                
-                            if col_map['optimal_path']:
-                                query += f", {col_map['optimal_path']}"
-                            else:
-                                query += ", NULL"  # Default path
-                                
-                            if col_map['difficulty']:
-                                query += f", {col_map['difficulty']}"
-                            else:
-                                query += ", 1"  # Default difficulty
-                                
-                            query += f" FROM {alt_table}"
-                            
-                            cursor.execute(query)
-                            for row in cursor.fetchall():
-                                if self.graph.has_node(int(row[0])) and self.graph.has_node(int(row[1])):
-                                    self.graph.add_edge(int(row[0]), int(row[1]),
-                                                      connection_length=row[2] if len(row) > 2 else 1,
-                                                      optimal_path=row[3] if len(row) > 3 else None,
-                                                      difficulty=row[4] if len(row) > 4 else 1)
-                            
-                            connections_loaded = True
-                            self.status_var.set(f"Loaded connection data from alternative table {alt_table}")
-                        else:
-                            self.status_var.set(f"Could not map required columns in {alt_table}")
-                    else:
-                        self.status_var.set(f"No suitable connections table found in {conn_db_path}")
                 
                 conn.close()
             else:
@@ -657,6 +601,97 @@ class ActorToActorApp:
             return False
         
         return actors_loaded or connections_loaded
+
+    def _build_movie_connections(self, conn):
+        """Build graph edges based on actors appearing in the same movies/TV shows"""
+        self.status_var.set("Building movie and TV connections...")
+        self.root.update_idletasks()
+        
+        cursor = conn.cursor()
+        
+        # Check if movie_credits table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='movie_credits'")
+        if cursor.fetchone():
+            # Create a dictionary mapping each movie to actors
+            # MODIFIED: Added character filter to exclude self-appearances
+            cursor.execute("""
+                SELECT id, actor_id, title, character 
+                FROM movie_credits 
+                WHERE LOWER(character) NOT IN ('self', 'himself', 'herself')
+                AND character NOT LIKE 'self%'
+                AND character IS NOT NULL
+                AND character != ''
+            """)
+            
+            movies_to_actors = {}
+            for movie_id, actor_id, title, character in cursor.fetchall():
+                # Skip any character that matches the actor's name (self-appearance)
+                if self.graph.has_node(actor_id) and character == self.graph.nodes[actor_id].get('name'):
+                    continue
+                    
+                if movie_id not in movies_to_actors:
+                    movies_to_actors[movie_id] = []
+                movies_to_actors[movie_id].append(actor_id)
+            
+            # Create edges for actors who appeared in the same movie
+            for movie_id, actors in movies_to_actors.items():
+                for i in range(len(actors)):
+                    for j in range(i+1, len(actors)):
+                        actor1, actor2 = actors[i], actors[j]
+                        if self.graph.has_edge(actor1, actor2):
+                            # Update existing edge
+                            self.graph[actor1][actor2]['weight'] += 1
+                            self.graph[actor1][actor2]['credits'].append(movie_id)
+                        else:
+                            # Create new edge
+                            self.graph.add_edge(actor1, actor2, 
+                                               weight=1, 
+                                               credits=[movie_id],
+                                               connection_type='movie')
+        
+        # Check if tv_credits table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tv_credits'")
+        if cursor.fetchone():
+            # Create a dictionary mapping each TV show to actors
+            # MODIFIED: Added character filter to exclude self-appearances
+            cursor.execute("""
+                SELECT id, actor_id, name, character 
+                FROM tv_credits 
+                WHERE LOWER(character) NOT IN ('self', 'himself', 'herself')
+                AND character NOT LIKE 'self%'
+                AND character IS NOT NULL
+                AND character != ''
+            """)
+            
+            tv_to_actors = {}
+            for tv_id, actor_id, name, character in cursor.fetchall():
+                # Skip any character that matches the actor's name (self-appearance)
+                if self.graph.has_node(actor_id) and character == self.graph.nodes[actor_id].get('name'):
+                    continue
+                    
+                if tv_id not in tv_to_actors:
+                    tv_to_actors[tv_id] = []
+                tv_to_actors[tv_id].append(actor_id)
+            
+            # Create edges for actors who appeared in the same TV show
+            for tv_id, actors in tv_to_actors.items():
+                for i in range(len(actors)):
+                    for j in range(i+1, len(actors)):
+                        actor1, actor2 = actors[i], actors[j]
+                        if self.graph.has_edge(actor1, actor2):
+                            # Update existing edge
+                            self.graph[actor1][actor2]['weight'] += 1
+                            self.graph[actor1][actor2]['credits'].append(tv_id)
+                        else:
+                            # Create new edge
+                            self.graph.add_edge(actor1, actor2, 
+                                               weight=1, 
+                                               credits=[tv_id],
+                                               connection_type='tv')
+        
+        # Print the number of connections created
+        edge_count = self.graph.number_of_edges()
+        self.status_var.set(f"Built {edge_count} connections between actors")
 
     # Core functionality methods
     def search_actors_for(self, target_type):
@@ -982,6 +1017,19 @@ class ActorToActorApp:
             
         self.status_var.set(f"Finding path between '{start_name}' and '{target_name}'...")
         
+        # Add loading indicator to the path frame
+        loading_frame = ttk.Frame(self.path_frame)
+        loading_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(loading_frame, text="Searching for connection...", 
+                 font=("TkDefaultFont", 12)).pack(pady=10)
+        
+        progress = ttk.Progressbar(loading_frame, mode="indeterminate", length=300)
+        progress.pack(pady=10)
+        progress.start(15)  # Start the animation
+        
+        self.path_frame.update_idletasks()
+        
         # Get actor IDs if needed
         start_id = getattr(self, "start_actor_id", None)
         target_id = getattr(self, "target_actor_id", None)
@@ -990,6 +1038,8 @@ class ActorToActorApp:
             # Search for start actor
             start_id = self._find_actor_by_name(start_name)
             if not start_id:
+                progress.stop()  # Stop the animation
+                loading_frame.destroy()  # Remove the loading indicator
                 self.status_var.set(f"Could not find actor '{start_name}'")
                 return
         
@@ -997,13 +1047,23 @@ class ActorToActorApp:
             # Search for target actor
             target_id = self._find_actor_by_name(target_name)
             if not target_id:
+                progress.stop()  # Stop the animation
+                loading_frame.destroy()  # Remove the loading indicator
                 self.status_var.set(f"Could not find actor '{target_name}'")
                 return
+        
+        # Store the loading widgets to be removed when path finding completes
+        self.loading_widgets = loading_frame
+        
+        # Pass search settings to the background thread
+        include_tv = self.include_tv.get()
+        exclude_mcu = self.exclude_mcu.get()
+        max_depth = self.max_depth.get()
         
         # Start path finding in a background thread
         threading.Thread(
             target=self._find_shortest_path,
-            args=(int(start_id), int(target_id)),
+            args=(int(start_id), int(target_id), include_tv, exclude_mcu, max_depth),
             daemon=True
         ).start()
 
@@ -1037,17 +1097,162 @@ class ActorToActorApp:
         except Exception as e:
             print(f"Error finding actor by name: {str(e)}")
             return None
-
-    def _find_shortest_path(self, start_id, target_id):
-        """Find the shortest path between two actors"""
+    def _is_mcu_credit(self, credit_id):
+        """Check if a credit is from an MCU production"""
         try:
-            path = nx.shortest_path(self.graph, source=start_id, target=target_id)
+            if 'actors' in self.db_connections:
+                conn = sqlite3.connect(self.db_connections['actors']['path'])
+                cursor = conn.cursor()
+                
+                # Check in movie credits
+                cursor.execute("SELECT is_mcu FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
+                result = cursor.fetchone()
+                if result:
+                    is_mcu = result[0] == 1
+                    conn.close()
+                    return is_mcu
+                    
+                # Check in TV credits
+                cursor.execute("SELECT is_mcu FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+                result = cursor.fetchone()
+                if result:
+                    is_mcu = result[0] == 1
+                    conn.close()
+                    return is_mcu
+                    
+                conn.close()
+        except Exception as e:
+            print(f"Error checking MCU status: {str(e)}")
+        
+        return False
+    def _find_shortest_path(self, start_id, target_id, include_tv=True, exclude_mcu=False, max_depth=6):
+        """Find the shortest path between two actors with filters"""
+        try:
+            # First check if there's a pre-computed path in actor_connections
+            if 'actor_connections' in self.db_connections:
+                try:
+                    conn = sqlite3.connect(self.db_connections['actor_connections']['path'])
+                    cursor = conn.cursor()
+                    # Check both directions
+                    cursor.execute("""
+                        SELECT optimal_path FROM actor_connections 
+                        WHERE (start_id = ? AND target_id = ?) OR (start_id = ? AND target_id = ?)
+                    """, (start_id, target_id, target_id, start_id))
+                    result = cursor.fetchone()
+                    conn.close()
+                    
+                    if result:
+                        # We found a pre-computed path, decompress and use it
+                        print("Using pre-computed path from actor_connections.db")
+                        import gzip
+                        import json
+                        path_data = gzip.decompress(result[0]).decode('utf-8')
+                        path_items = json.loads(path_data)
+                        
+                        # Extract just the actor IDs from the path
+                        actor_path = [int(item['i']) for item in path_items if item['t'] == 'a']
+                        
+                        # Clean up loading indicator and display path
+                        self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
+                        self.root.after(0, lambda: self._display_path(actor_path))
+                        return
+                except Exception as e:
+                    print(f"Error checking pre-computed path: {str(e)}")
+            
+            # Create a filtered copy of the graph based on the search settings
+            filtered_graph = self.graph.copy()
+            
+            # Filter out TV show connections if include_tv is False
+            if not include_tv:
+                edges_to_remove = []
+                for u, v, data in filtered_graph.edges(data=True):
+                    if data.get('connection_type') == 'tv':
+                        edges_to_remove.append((u, v))
+                filtered_graph.remove_edges_from(edges_to_remove)
+                print(f"Removed {len(edges_to_remove)} TV connections from search")
+                            
+            # Filter out MCU connections if exclude_mcu is True
+            if exclude_mcu:
+                edges_to_remove = []
+                for u, v, data in filtered_graph.edges(data=True):
+                    for credit_id in data.get('credits', []):
+                        # Check if this is an MCU movie/show
+                        if self._is_mcu_credit(credit_id):
+                            edges_to_remove.append((u, v))
+                            break
+                filtered_graph.remove_edges_from(edges_to_remove)
+                print(f"Removed {len(edges_to_remove)} MCU connections from search")
+                
+            # Verify all connections have actual movies/shows in the database
+            verified_graph = self._verify_connections(filtered_graph)
+            if verified_graph.number_of_edges() < filtered_graph.number_of_edges():
+                print(f"Removed {filtered_graph.number_of_edges() - verified_graph.number_of_edges()} unverified connections")
+            
+            # Fall back to calculating path using NetworkX
+            try:
+                # Try to find path in the verified graph first
+                path = nx.shortest_path(verified_graph, source=start_id, target=target_id)
+                print("Found path in verified graph")
+            except nx.NetworkXNoPath:
+                # No path found with verified connections
+                # Clean up loading indicator
+                self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
+                self.root.after(0, lambda: self.status_var.set("No verified path found between these actors"))
+                return
+            
+            # Clean up loading indicator in the main thread
+            self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
+            
+            # Display the path
             self.root.after(0, lambda: self._display_path(path))
         except nx.NetworkXNoPath:
-            self.root.after(0, lambda: self.status_var.set("No path found"))
+            # Clean up loading indicator
+            self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
+            self.root.after(0, lambda: self.status_var.set("No path found between these actors"))
         except Exception as e:
+            # Clean up loading indicator
+            self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
             print(f"Error finding shortest path: {str(e)}")
-            self.root.after(0, lambda: self.status_var.set(f"Error finding path: {str(e)}"))
+            
+            # Fix the lambda issue
+            error_msg = f"Error finding path: {str(e)}"
+            self.root.after(0, lambda msg=error_msg: self.status_var.set(msg))
+
+    def _verify_connections(self, graph):
+        """Verify all connections have actual movies or TV shows in the database"""
+        verified_graph = graph.copy()
+        edges_to_remove = []
+        
+        if 'actors' not in self.db_connections:
+            # Can't verify without the actors database
+            return verified_graph
+        
+        conn = sqlite3.connect(self.db_connections['actors']['path'])
+        cursor = conn.cursor()
+        
+        for actor1, actor2, data in graph.edges(data=True):
+            valid_edge = False
+            if 'credits' in data:
+                for credit_id in data['credits']:
+                    # Check if this credit exists in either movie_credits or tv_credits
+                    cursor.execute("SELECT 1 FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
+                    if cursor.fetchone():
+                        valid_edge = True
+                        break
+                    
+                    cursor.execute("SELECT 1 FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+                    if cursor.fetchone():
+                        valid_edge = True
+                        break
+            
+            if not valid_edge:
+                edges_to_remove.append((actor1, actor2))
+        
+        conn.close()
+        
+        # Remove all unverified edges
+        verified_graph.remove_edges_from(edges_to_remove)
+        return verified_graph
 
     def _display_path(self, path):
         """Display the found actor path in the UI"""
@@ -1064,13 +1269,22 @@ class ActorToActorApp:
             else:
                 actor_names.append(f"Unknown Actor {actor_id}")
         
+        # Calculate correct connection count - the number of INTERMEDIARY actors
+        # If two actors are direct co-stars, that's 0 connections
+        # If there's one actor between them, that's 1 connection, etc.
+        connection_count = len(path) - 2
+        
+        # Special case: Direct co-stars
+        connection_text = "0 connections (direct co-stars)" if connection_count == 0 else \
+                        f"{connection_count} connection{'s' if connection_count != 1 else ''}"
+        
         # Create text description
         path_text = " → ".join(actor_names)
         self.results_text.delete("1.0", tk.END)
-        self.results_text.insert("1.0", f"Path found with {len(path)-1} connections:\n\n{path_text}")
+        self.results_text.insert("1.0", f"Path found with {connection_text}:\n\n{path_text}")
         
         # Update status
-        self.status_var.set(f"Found path with {len(path)-1} connections")
+        self.status_var.set(f"Found path with {connection_text}")
         
         # Clear previous visual path
         for widget in self.path_frame.winfo_children():
@@ -1093,21 +1307,30 @@ class ActorToActorApp:
                     movie_frame.pack(side=tk.LEFT, padx=5)
                     movie_title = "Unknown Movie"
                     
-                    # Check if we have movie data
+                    # Check for credits in the edge data
                     if 'credits' in self.graph[actor1][actor2]:
                         credit_id = self.graph[actor1][actor2]['credits'][0]
-                        # Find the movie name from actor credits
+                        
+                        # Try to find the movie/show title
                         if 'actors' in self.db_connections:
                             try:
                                 conn = sqlite3.connect(self.db_connections['actors']['path'])
                                 cursor = conn.cursor()
+                                
+                                # Try movie credits first
                                 cursor.execute("SELECT title FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
                                 result = cursor.fetchone()
                                 if result:
                                     movie_title = result[0]
+                                else:
+                                    # Try TV credits if movie not found
+                                    cursor.execute("SELECT name FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+                                    result = cursor.fetchone()
+                                    if result:
+                                        movie_title = result[0]
                                 conn.close()
-                            except:
-                                pass
+                            except Exception as e:
+                                print(f"Error finding credit: {str(e)}")
                     
                     ttk.Label(movie_frame, text=f"in\n{movie_title}", font=("TkDefaultFont", 8), 
                              justify=tk.CENTER, wraplength=100).pack()
@@ -1132,8 +1355,8 @@ class ActorToActorApp:
                             img_label = ttk.Label(actor_frame, image=photo)
                             img_label.image = photo  # Keep a reference
                             img_label.pack(padx=5, pady=5)
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Error loading actor image: {str(e)}")
             else:
                 name = f"Unknown Actor {actor_id}"
                 
@@ -1271,9 +1494,9 @@ class ActorToActorApp:
         self.notebook.select(self.path_tab)
         
         # Show message to select start actor if not already selected
-        if not hasattr(self, "start_actor_id"):
+        if not hasattr(self, "start_actor_id") or not self.start_actor_id:
             messagebox.showinfo("Select Start Actor", 
-                            "Now please search for and select a start actor, then click 'Find Path'")
+                              "Now please search for and select a start actor, then click 'Find Path'")
     
     def threaded_load_actor_credits(self, actor_id, selected_db, db_path, credits_tree, status_var):
         # Method to load actor credits in a background thread
@@ -1447,6 +1670,9 @@ class ActorToActorApp:
         ttk.Button(button_frame, text="Select", command=select_actor).pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
         
+        # Double-click also selects
+        tree.bind("<Double-1>", lambda e: select_actor())
+        
         # Populate with search results
         conn = sqlite3.connect(self.db_connections['actors']['path'])
         cursor = conn.cursor()
@@ -1467,6 +1693,7 @@ class ActorToActorApp:
         # If results found, select the first one
         if tree.get_children():
             tree.selection_set(tree.get_children()[0])
+            tree.focus(tree.get_children()[0])
 
 if __name__ == "__main__":
     root = tk.Tk()
