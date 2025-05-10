@@ -102,59 +102,48 @@ def get_country_threshold(country_code):
     else:
         return 8  # Default threshold for countries not in REGIONS
 
-def assign_actor_to_regions(actor, movie_credits, tv_credits):
+def assign_actor_to_regions(actor, movie_credits, tv_credits, details_data):
     """
-    Determines which regions an actor is relevant to based on their credits.
-    Returns a list of region codes and a dict of average popularity scores.
+    Improved regional assignment considering birth country and actual production countries
     """
-    # Always include actor in GLOBAL region
-    assigned_regions = ["GLOBAL"]
+    assigned_regions = ["GLOBAL"]  # Always include global
     region_scores = {"GLOBAL": actor["popularity"]}
     
-    # Extract production countries from credits
-    production_countries = []
+    # 1. Assign based on place of birth (highest priority)
+    if details_data and details_data.get("place_of_birth"):
+        birth_place = details_data["place_of_birth"]
+        
+        # Check for common countries in birth place
+        if any(country in birth_place for country in ["United Kingdom", "England", "Scotland", "Wales"]):
+            assigned_regions.append("UK")
+            region_scores["UK"] = actor["popularity"] * 1.2  # Boost for home country
+        
+        elif "United States" in birth_place:
+            assigned_regions.append("US") 
+            region_scores["US"] = actor["popularity"] * 1.2
+            
+        # Add more countries as needed
     
-    # Process movie credits
+    # 2. Fetch ACTUAL production countries for movies
+    production_countries = {}
     for movie in movie_credits:
-        # For this simplified version, we'll just use popularity as a proxy
-        # In a real implementation, you'd fetch movie details to get countries
-        if movie["popularity"] >= MIN_CREDIT_POPULARITY:
-            # Add to global score (we're just simulating here)
-            production_countries.append(("GLOBAL", movie["popularity"]))
+        # Need to fetch full movie details to get production_countries
+        movie_data = make_api_request(f"{BASE_URL}/movie/{movie['id']}", {"api_key": TMDB_API_KEY})
+        if movie_data and "production_countries" in movie_data:
+            for country in movie_data["production_countries"]:
+                code = country["iso_3166_1"]
+                production_countries[code] = production_countries.get(code, 0) + 1
     
-    # Process TV credits
-    for tv in tv_credits:
-        if tv["popularity"] >= MIN_CREDIT_POPULARITY:
-            # Add to global score
-            production_countries.append(("GLOBAL", tv["popularity"]))
+    # 3. Assign to countries where they've worked extensively
+    for country_code, count in production_countries.items():
+        if count >= 3:  # Actor has 3+ productions in country
+            if country_code not in assigned_regions:
+                assigned_regions.append(country_code)
+                region_scores[country_code] = actor["popularity"]
     
-    # Calculate region relevance based on production countries
-    # For individual countries, check if the actor has enough presence
-    us_productions = [p for p in production_countries if p[0] == "US"]
-    uk_productions = [p for p in production_countries if p[0] == "GB"]
-    
-    # If actor has significant US presence, add them to US region
-    if len(us_productions) >= 2:
-        assigned_regions.append("US")
-        region_scores["US"] = actor["popularity"]
-    
-    # If actor has significant UK presence, add them to UK region
-    if len(uk_productions) >= 2:
-        assigned_regions.append("UK")
-        region_scores["UK"] = actor["popularity"]
-    
-    # For simplified implementation, add actor to other major regions based on credits count
-    total_credits = len(movie_credits) + len(tv_credits)
-    
-    # If they have many credits, they're likely relevant in multiple regions
-    if total_credits >= 20:
-        for region in ["CA", "AU", "FR", "DE"]:
-            assigned_regions.append(region)
-            region_scores[region] = actor["popularity"]
-    
-    # For actors with very high popularity, include them in more regions
-    if actor["popularity"] > 50:
-        for region in ["JP", "KR", "IN", "CN"]:
+    # 4. Keep global popularity logic for extremely popular actors
+    if actor["popularity"] > 25:
+        for region in ["US", "UK", "CA", "AU", "FR", "DE"]:
             if region not in assigned_regions:
                 assigned_regions.append(region)
                 region_scores[region] = actor["popularity"]
@@ -619,7 +608,8 @@ for page in range(start_page, TOTAL_PAGES + 1):
         actor_regions, avg_scores = assign_actor_to_regions(
             {"id": actor_id, "name": actor_name, "popularity": custom_popularity},
             movie_credits,
-            tv_credits
+            tv_credits,
+            details_data  # Pass in the details data you fetched earlier
         )
         
         print(f"  Assigned {actor_name} to regions: {', '.join(actor_regions)}")
