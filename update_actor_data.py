@@ -101,6 +101,65 @@ def get_country_threshold(country_code):
     else:
         return 8  # Default threshold for countries not in REGIONS
 
+def assign_actor_to_regions(actor, movie_credits, tv_credits):
+    """
+    Determines which regions an actor is relevant to based on their credits.
+    Returns a list of region codes and a dict of average popularity scores.
+    """
+    # Always include actor in GLOBAL region
+    assigned_regions = ["GLOBAL"]
+    region_scores = {"GLOBAL": actor["popularity"]}
+    
+    # Extract production countries from credits
+    production_countries = []
+    
+    # Process movie credits
+    for movie in movie_credits:
+        # For this simplified version, we'll just use popularity as a proxy
+        # In a real implementation, you'd fetch movie details to get countries
+        if movie["popularity"] >= MIN_CREDIT_POPULARITY:
+            # Add to global score (we're just simulating here)
+            production_countries.append(("GLOBAL", movie["popularity"]))
+    
+    # Process TV credits
+    for tv in tv_credits:
+        if tv["popularity"] >= MIN_CREDIT_POPULARITY:
+            # Add to global score
+            production_countries.append(("GLOBAL", tv["popularity"]))
+    
+    # Calculate region relevance based on production countries
+    # For individual countries, check if the actor has enough presence
+    us_productions = [p for p in production_countries if p[0] == "US"]
+    uk_productions = [p for p in production_countries if p[0] == "GB"]
+    
+    # If actor has significant US presence, add them to US region
+    if len(us_productions) >= 2:
+        assigned_regions.append("US")
+        region_scores["US"] = actor["popularity"]
+    
+    # If actor has significant UK presence, add them to UK region
+    if len(uk_productions) >= 2:
+        assigned_regions.append("UK")
+        region_scores["UK"] = actor["popularity"]
+    
+    # For simplified implementation, add actor to other major regions based on credits count
+    total_credits = len(movie_credits) + len(tv_credits)
+    
+    # If they have many credits, they're likely relevant in multiple regions
+    if total_credits >= 20:
+        for region in ["CA", "AU", "FR", "DE"]:
+            assigned_regions.append(region)
+            region_scores[region] = actor["popularity"]
+    
+    # For actors with very high popularity, include them in more regions
+    if actor["popularity"] > 50:
+        for region in ["JP", "KR", "IN", "CN"]:
+            if region not in assigned_regions:
+                assigned_regions.append(region)
+                region_scores[region] = actor["popularity"]
+    
+    return assigned_regions, region_scores
+
 # Robust API request function with exponential backoff
 def make_api_request(url, params, max_retries=5):
     """Make API request with retry logic and exponential backoff"""
