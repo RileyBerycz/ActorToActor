@@ -342,13 +342,18 @@ print(f"Starting data collection from page {start_page}/{TOTAL_PAGES}")
 print(f"Already processed {len(processed_actors)} actors")
 
 # Add this near the top of the script where other data structures are initialized
-mcu_cache = {'movie': set(), 'person': set()}
+mcu_cache = {'movie': {}, 'tv': {}, 'person': {}}
 
 # Make sure to load it from file if it exists
 try:
     with open('mcu_cache.json', 'r') as f:
         mcu_data = json.load(f)
-        mcu_cache = {'movie': set(mcu_data['movie']), 'person': set(mcu_data['person'])}
+        # Convert to dictionaries with proper type conversion for keys
+        mcu_cache = {
+            'movie': {int(k): v for k, v in mcu_data.get('movie', {}).items()},
+            'tv': {int(k): v for k, v in mcu_data.get('tv', {}).items()},
+            'person': {int(k): v for k, v in mcu_data.get('person', {}).items()}
+        }
     print("Loaded MCU cache")
 except FileNotFoundError:
     print("No MCU cache found, starting with empty cache")
