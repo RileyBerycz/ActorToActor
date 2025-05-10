@@ -341,6 +341,18 @@ max_runtime_seconds = MAX_RUNTIME_HOURS * 60 * 60
 print(f"Starting data collection from page {start_page}/{TOTAL_PAGES}")
 print(f"Already processed {len(processed_actors)} actors")
 
+# Add this near the top of the script where other data structures are initialized
+mcu_cache = {'movie': set(), 'person': set()}
+
+# Make sure to load it from file if it exists
+try:
+    with open('mcu_cache.json', 'r') as f:
+        mcu_data = json.load(f)
+        mcu_cache = {'movie': set(mcu_data['movie']), 'person': set(mcu_data['person'])}
+    print("Loaded MCU cache")
+except FileNotFoundError:
+    print("No MCU cache found, starting with empty cache")
+
 # Main data fetching loop
 for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
