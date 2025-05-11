@@ -1,0 +1,13 @@
+name: TMDB Page Count Check
+on:
+    workflow_dispatch:  # Only runs when manually triggered
+
+jobs:
+  check-tmdb-pages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check TMDB page count
+        run: python tmdb_page_checker.py
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
