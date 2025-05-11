@@ -67,8 +67,8 @@ jobs:
       - name: Check if data collection is complete
         if: success() || failure()  # Run this step regardless of previous step result
         run: |
-          if [ -f "./checkpoint.json" ]; then
-            COMPLETED=$(python -c "import json; print(json.load(open('./checkpoint.json'))['completed'])")
+          if [ -f "./actor-game/public/checkpoint.json" ]; then
+            COMPLETED=$(python -c "import json; print(json.load(open('./actor-game/public/checkpoint.json'))['completed'])")
             if [ "$COMPLETED" != "True" ]; then
               echo "Data collection is incomplete. Triggering another workflow run."
               curl -X POST \
