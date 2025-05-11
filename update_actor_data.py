@@ -10,35 +10,50 @@ import sys
 import datetime
 from requests.exceptions import ConnectionError, Timeout, RequestException
 
-# update actor code
-# Retrieve your TMDB API key from environment variables
+# =============================================================================
+# ACTOR TO ACTOR GAME - DATA COLLECTION SCRIPT
+# =============================================================================
+# This script collects actor data from TMDB API, processes it, and creates an
+# SQLite database to power the Actor-to-Actor game. It collects:
+# - Actor details and popularity metrics
+# - Movie and TV credits with character information
+# - Regional assignments for actors based on their work and origin
+# - MCU (Marvel Cinematic Universe) flags for special game modes
+# 
+# The script supports checkpointing to resume data collection across
+# multiple executions, making it suitable for GitHub Actions workflows.
+# =============================================================================
+
+# Retrieve TMDB API key from environment variables
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 if not TMDB_API_KEY:
     raise Exception("TMDB_API_KEY not set in environment variables.")
 
-# Constants
+# =============================================================================
+# API CONFIGURATION
+# =============================================================================
 BASE_URL = "https://api.themoviedb.org/3"
 POPULAR_ACTORS_URL = f"{BASE_URL}/person/popular"
 ACTOR_MOVIE_CREDITS_URL_TEMPLATE = f"{BASE_URL}/person/{{}}/movie_credits"
 ACTOR_TV_CREDITS_URL_TEMPLATE = f"{BASE_URL}/person/{{}}/tv_credits"
 ACTOR_DETAILS_URL_TEMPLATE = f"{BASE_URL}/person/{{}}"
 
-# Image base URL
+# Image configuration
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p/"
 PROFILE_SIZE = "w185"
 POSTER_SIZE = "w342"
 
-# How many pages of popular actors to fetch
-TOTAL_PAGES = 1000
-
-# Minimum popularity for movie/TV credits
-MIN_CREDIT_POPULARITY = 1.0
-
-# Add after other constants
+# =============================================================================
+# DATA COLLECTION SETTINGS
+# =============================================================================
+TOTAL_PAGES = 1000                # Number of pages of popular actors to fetch
+MIN_CREDIT_POPULARITY = 1.0       # Minimum popularity for movie/TV credits to include
 CHECKPOINT_FILE = "actor-game/public/checkpoint.json"
-MAX_RUNTIME_HOURS = 4  # Exit after this many hours to allow clean completion
+MAX_RUNTIME_HOURS = 4             # Exit after this many hours to allow clean completion
 
-# Expanded region approach
+# =============================================================================
+# REGION CONFIGURATION
+# =============================================================================
 # Create regions dictionary dynamically with all countries
 REGIONS = {}
 
@@ -58,7 +73,7 @@ CONTINENTS = {
 # Add all these regions
 REGIONS.update(CONTINENTS)
 
-# Add individual countries
+# Add individual countries from pycountry library
 for country in pycountry.countries:
     code = country.alpha_2
     REGIONS[code] = {
@@ -68,9 +83,19 @@ for country in pycountry.countries:
         "continent": None  # Placeholder for continent mapping
     }
 
-# Helper function to determine which continent a country belongs to
+# =============================================================================
+# UTILITY FUNCTIONS - REGION MAPPING
+# =============================================================================
 def get_continent(country_code):
-    """Determine which continent a country belongs to"""
+    """
+    Determine which continent a country belongs to based on its code
+    
+    Args:
+        country_code: ISO 2-letter country code
+        
+    Returns:
+        String continent identifier or 'OTHER'
+    """
     # Basic mapping of some common countries to continents
     europe_codes = ['GB', 'FR', 'DE', 'IT', 'ES', 'PT', 'BE', 'NL', 'CH', 'AT', 'SE', 'NO', 'DK', 'FI', 'PL']
     namerica_codes = ['US', 'CA', 'MX']
@@ -94,17 +119,41 @@ def get_continent(country_code):
     else:
         return 'OTHER'
 
-# Helper function to get threshold value for a country
 def get_country_threshold(country_code):
-    """Get the threshold value for a specific country"""
+    """
+    Get the threshold value for a specific country
+    
+    Args:
+        country_code: ISO 2-letter country code
+        
+    Returns:
+        Integer threshold value
+    """
     if country_code in REGIONS:
         return REGIONS[country_code].get("threshold", 8)  # Default to 8 if not specified
     else:
         return 8  # Default threshold for countries not in REGIONS
 
+# =============================================================================
+# ACTOR REGION ASSIGNMENT
+# =============================================================================
 def assign_actor_to_regions(actor, movie_credits, tv_credits, details_data):
     """
     Improved regional assignment considering birth country and actual production countries
+    
+    This function determines which regions an actor should be associated with based on:
+    1. Their birth place/country of origin
+    2. Production countries of their movies
+    3. Overall popularity (globally significant actors are added to major regions)
+    
+    Args:
+        actor: Dictionary with actor details
+        movie_credits: List of movie credits
+        tv_credits: List of TV credits
+        details_data: Dictionary with additional actor details
+        
+    Returns:
+        tuple: (assigned_regions, region_scores)
     """
     assigned_regions = ["GLOBAL"]  # Always include global
     region_scores = {"GLOBAL": actor["popularity"]}
@@ -142,6 +191,7 @@ def assign_actor_to_regions(actor, movie_credits, tv_credits, details_data):
                 region_scores[country_code] = actor["popularity"]
     
     # 4. Keep global popularity logic for extremely popular actors
+    # Ensures A-list actors appear in key regional databases
     if actor["popularity"] > 25:
         for region in ["US", "UK", "CA", "AU", "FR", "DE"]:
             if region not in assigned_regions:
@@ -150,9 +200,24 @@ def assign_actor_to_regions(actor, movie_credits, tv_credits, details_data):
     
     return assigned_regions, region_scores
 
-# Robust API request function with exponential backoff
+# =============================================================================
+# API INTERACTION
+# =============================================================================
 def make_api_request(url, params, max_retries=5):
-    """Make API request with retry logic and exponential backoff"""
+    """
+    Make API request with retry logic and exponential backoff
+    
+    Handles various error conditions including rate limiting,
+    connection issues, and timeouts with smart retries.
+    
+    Args:
+        url: API endpoint URL
+        params: Dictionary of query parameters
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        Dictionary with API response or None if failed
+    """
     retries = 0
     while retries < max_retries:
         try:
@@ -175,6 +240,7 @@ def make_api_request(url, params, max_retries=5):
             return None
             
         except (ConnectionError, Timeout, RequestException) as e:
+            # Implement exponential backoff with jitter
             wait_time = 2 ** retries + random.uniform(0, 1)
             print(f"Request failed: {e}. Retrying in {wait_time:.2f} seconds...")
             time.sleep(wait_time)
@@ -183,8 +249,20 @@ def make_api_request(url, params, max_retries=5):
     print(f"Failed after {max_retries} retries. Skipping this request.")
     return None
 
+# =============================================================================
+# POPULARITY METRICS CALCULATION
+# =============================================================================
 def calculate_years_active(movie_credits, tv_credits):
-    """Calculate how many years an actor has been active based on their credits"""
+    """
+    Calculate how many years an actor has been active based on their credits
+    
+    Args:
+        movie_credits: List of movie credits
+        tv_credits: List of TV credits
+        
+    Returns:
+        Integer representing years active (1-60)
+    """
     all_dates = []
     
     # Extract movie dates
@@ -223,7 +301,16 @@ def calculate_years_active(movie_credits, tv_credits):
     return min(years_active, 60)
 
 def calculate_credit_popularity(movie_credits, tv_credits):
-    """Calculate average popularity of an actor's credits"""
+    """
+    Calculate average popularity of an actor's credits
+    
+    Args:
+        movie_credits: List of movie credits
+        tv_credits: List of TV credits
+        
+    Returns:
+        Float representing average popularity
+    """
     all_popularity_scores = []
     
     for movie in movie_credits:
@@ -242,7 +329,22 @@ def calculate_credit_popularity(movie_credits, tv_credits):
     return sum(all_popularity_scores) / len(all_popularity_scores)
 
 def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity):
-    """Calculate a more balanced popularity score"""
+    """
+    Calculate a more balanced popularity score that considers:
+    - Recent TMDB popularity (trending status)
+    - Number of credits (prolific career)
+    - Years active (longevity)
+    - Average credit popularity (quality of work)
+    
+    Args:
+        tmdb_popularity: Raw popularity from TMDB
+        num_credits: Number of credits
+        years_active: Years active in industry
+        avg_credit_popularity: Average popularity of credits
+        
+    Returns:
+        Float representing custom balanced popularity score
+    """
     longevity_factor = min(years_active / 10, 1.0)  # Cap at 10 years
     credits_factor = min(num_credits / 20, 1.0)     # Cap at 20 credits
     
@@ -256,8 +358,16 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
     
     return custom_score
 
+# =============================================================================
+# DATABASE SETUP
+# =============================================================================
 def setup_database():
-    """Create a single SQLite database with region flags"""
+    """
+    Create a single SQLite database with all required tables
+    
+    Returns:
+        tuple: (connection, cursor)
+    """
     db_path = "actor-game/public/actors.db"
     
     # Create directory if it doesn't exist
@@ -328,14 +438,33 @@ def setup_database():
     conn.commit()
     return conn, cursor
 
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 def normalize_image_path(path):
-    """Ensure image path has leading slash if it exists"""
+    """
+    Ensure image path has leading slash if it exists
+    
+    Args:
+        path: Image path string
+        
+    Returns:
+        Normalized path string
+    """
     if not path:
         return ""
     return path if path.startswith('/') else f"/{path}"
 
+# =============================================================================
+# CHECKPOINT MANAGEMENT
+# =============================================================================
 def load_checkpoint():
-    """Load previous execution progress from checkpoint file"""
+    """
+    Load previous execution progress from checkpoint file
+    
+    Returns:
+        Dictionary with checkpoint data
+    """
     if not os.path.exists(CHECKPOINT_FILE):
         print("No checkpoint file found, starting fresh")
         return {
@@ -360,7 +489,14 @@ def load_checkpoint():
         }
 
 def save_checkpoint(page, processed_actors, completed=False):
-    """Save current progress to checkpoint file"""
+    """
+    Save current progress to checkpoint file
+    
+    Args:
+        page: Current page number
+        processed_actors: Set of processed actor IDs
+        completed: Whether data collection is complete
+    """
     os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
     
     checkpoint = {
@@ -375,6 +511,9 @@ def save_checkpoint(page, processed_actors, completed=False):
     
     print(f"Checkpoint saved at page {page}")
 
+# =============================================================================
+# INITIALIZATION
+# =============================================================================
 # Set up single database
 conn, cursor = setup_database()
 
@@ -390,10 +529,10 @@ max_runtime_seconds = MAX_RUNTIME_HOURS * 60 * 60
 print(f"Starting data collection from page {start_page}/{TOTAL_PAGES}")
 print(f"Already processed {len(processed_actors)} actors")
 
-# Add this near the top of the script where other data structures are initialized
+# Initialize MCU cache to avoid repeat API calls for MCU detection
 mcu_cache = {'movie': {}, 'tv': {}, 'person': {}}
 
-# Make sure to load it from file if it exists
+# Make sure to load MCU cache from file if it exists
 try:
     with open('mcu_cache.json', 'r') as f:
         mcu_data = json.load(f)
@@ -407,7 +546,9 @@ try:
 except FileNotFoundError:
     print("No MCU cache found, starting with empty cache")
 
-# Main data fetching loop
+# =============================================================================
+# MAIN DATA COLLECTION LOOP
+# =============================================================================
 for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
     
@@ -480,17 +621,16 @@ for page in range(start_page, TOTAL_PAGES + 1):
                     # Get character info
                     character = credit.get("character", "")
                     
-                    # Check if character is self-appearance
+                    # Skip self-appearances which aren't useful for the game
                     if character.lower() in ['self', 'himself', 'herself']:
-                        # Skip self appearances
                         continue
                         
-                    # Skip documentaries
+                    # Skip documentaries which aren't useful for the game
                     title = credit.get("title", "").lower()
                     if any(keyword in title for keyword in ['documentary', 'behind the scenes']):
                         continue
                     
-                    # Check MCU status from cache first
+                    # Check MCU status from cache first (for "exclude MCU" game mode)
                     is_mcu = False
                     if movie_id in mcu_cache['movie']:
                         is_mcu = mcu_cache['movie'][movie_id]
@@ -508,7 +648,7 @@ for page in range(start_page, TOTAL_PAGES + 1):
                                     is_mcu = True
                                     break
                             
-                            # Save to cache
+                            # Save to cache to avoid redundant API calls
                             mcu_cache['movie'][movie_id] = is_mcu
                     
                     # Add to movie credits with MCU flag
@@ -522,7 +662,7 @@ for page in range(start_page, TOTAL_PAGES + 1):
                         "is_mcu": is_mcu
                     })
                     
-                    # Rate limiting
+                    # Rate limiting for new API calls
                     if movie_id not in mcu_cache['movie']:
                         time.sleep(0.25)
         
@@ -544,7 +684,7 @@ for page in range(start_page, TOTAL_PAGES + 1):
                     if character.lower() in ['self', 'himself', 'herself']:
                         continue
                     
-                    # Skip if the TV title contains keywords suggesting a non-scripted format
+                    # Skip non-scripted TV formats
                     tv_name = credit.get("name", "").lower()
                     excluded_keywords = ['talk', 'game', 'reality', 'news', 'award']
                     if any(keyword in tv_name for keyword in excluded_keywords):
@@ -585,16 +725,12 @@ for page in range(start_page, TOTAL_PAGES + 1):
                     if tv_id not in mcu_cache['tv']:
                         time.sleep(0.25)
         
-        # Calculate number of credits
+        # Calculate metrics for custom popularity score
         num_credits = len(movie_credits) + len(tv_credits)
-        
-        # Calculate years active
         years_active = calculate_years_active(movie_credits, tv_credits)
-        
-        # Calculate average credit popularity
         avg_credit_popularity = calculate_credit_popularity(movie_credits, tv_credits)
         
-        # Calculate custom popularity score
+        # Calculate custom popularity score based on multiple factors
         custom_popularity = calculate_custom_popularity(
             tmdb_popularity, 
             num_credits,
@@ -614,6 +750,9 @@ for page in range(start_page, TOTAL_PAGES + 1):
         
         print(f"  Assigned {actor_name} to regions: {', '.join(actor_regions)}")
         
+        # =============================================================================
+        # DATABASE INSERTION
+        # =============================================================================
         # Insert data into the database with custom popularity as primary metric
         for region in actor_regions:
             # Clean text for SQL
@@ -684,7 +823,7 @@ for page in range(start_page, TOTAL_PAGES + 1):
             
             conn.commit()
         
-        # Delay between actors
+        # Delay between actors to respect API rate limits
         time.sleep(0.5)
     
     # Save checkpoint after each page
@@ -694,6 +833,9 @@ for page in range(start_page, TOTAL_PAGES + 1):
     time.sleep(1)
     print(f"Completed page {page}/{TOTAL_PAGES}")
 
+# =============================================================================
+# FINALIZATION
+# =============================================================================
 # Check if we've completed all pages before finalizing
 checkpoint = load_checkpoint()
 if not checkpoint.get('completed', False):
