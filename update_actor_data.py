@@ -13,6 +13,8 @@ from requests.exceptions import ConnectionError, Timeout, RequestException
 from bs4 import BeautifulSoup
 from pytrends.request import TrendReq
 from datetime import datetime, timezone, timedelta
+import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 
 # =============================================================================
 # ACTOR TO ACTOR GAME - DATA COLLECTION SCRIPT
@@ -549,6 +551,33 @@ def setup_database():
     conn.commit()
     return conn, cursor
 
+# Set up metrics database for API caching
+def setup_metrics_db():
+    """
+    Create or verify metrics caching database
+    """
+    metrics_db_path = "actor-game/public/metrics_cache.db"
+    
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(metrics_db_path), exist_ok=True)
+    
+    # Create database if it doesn't exist
+    conn = sqlite3.connect(metrics_db_path)
+    
+    # Create table if it doesn't exist
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS metrics_timestamps (
+        keyword TEXT,
+        metric_type TEXT,
+        value REAL,
+        last_updated TEXT,
+        PRIMARY KEY (keyword, metric_type)
+    )
+    ''')
+    
+    conn.commit()
+    return conn
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
@@ -669,10 +698,10 @@ def get_pytrends():
 _last_trends_call = 0
 _backoff_time = 1.0
 
-def should_update_metric(keyword, metric_type, conn, refresh_days=30):
+def should_update_metric(keyword, metric_type, conn, refresh_days=90):
     """
     Determines if we should make a new API call for this metric
-    based on when it was last updated.
+    with longer refresh period (90 days by default)
     
     Args:
         keyword: Search term (actor name, movie title)
@@ -743,55 +772,70 @@ def save_metric_value(keyword, metric_type, value, conn):
 
 # Google Trends - Search interest
 def fetch_search_interest(keyword: str, conn=None) -> float:
-    """Get recent search interest with time-based refresh"""
+    """Get recent search interest with time-based refresh and better handling"""
     if not keyword:
         return 0.0
     
-    # If we have a connection, check if we should update
+    # Check database cache first
     if conn:
         should_update, cached_value = should_update_metric(keyword, 'trends', conn)
         if not should_update and cached_value is not None:
             return cached_value
     
-    # If we need to fetch new data, use exponential backoff
+    # Use exponential backoff with much longer intervals
     global _last_trends_call, _backoff_time
+    max_retries = 5
+    retry_count = 0
     
-    try:
-        # Respect rate limiting
-        now = time.time()
-        if _last_trends_call > 0:
-            time_since_last = now - _last_trends_call
-            if time_since_last < _backoff_time:
-                wait_time = _backoff_time - time_since_last
-                print(f"Waiting {wait_time:.1f}s for Google Trends rate limit...")
-                time.sleep(wait_time)
-        
-        # Make the API call
-        pytrends = get_pytrends()
-        pytrends.build_payload([keyword], timeframe="today 3-m")
-        vals = pytrends.interest_over_time()[keyword]
-        score = float(vals.mean()) / 100.0
-        
-        # Success - reduce backoff time
-        _backoff_time = max(1.0, _backoff_time * 0.8)
-        _last_trends_call = time.time()
-        
-        # Cache the result if we have a connection
-        if conn:
-            save_metric_value(keyword, 'trends', score, conn)
+    while retry_count < max_retries:
+        try:
+            # Enforce much stricter rate limiting
+            now = time.time()
+            if _last_trends_call > 0:
+                time_since_last = now - _last_trends_call
+                if time_since_last < _backoff_time:
+                    wait_time = _backoff_time - time_since_last
+                    print(f"Waiting {wait_time:.1f}s for Google Trends rate limit...")
+                    time.sleep(wait_time)
             
-        return score
+            # Make API call
+            pytrends = get_pytrends()
+            pytrends.build_payload([keyword], timeframe="today 3-m")
+            
+            # Fix pandas warning with proper handling
+            trend_data = pytrends.interest_over_time()
+            if trend_data.empty:
+                score = 0.0
+            else:
+                # Use .copy() to avoid the pandas warning
+                trend_series = trend_data[keyword].copy()
+                trend_series = trend_series.fillna(0)
+                score = float(trend_series.mean()) / 100.0
+            
+            # Success - reduce backoff time but keep it substantial
+            _backoff_time = max(5.0, _backoff_time * 0.9)
+            _last_trends_call = time.time()
+            
+            # Cache the successful result
+            if conn:
+                save_metric_value(keyword, 'trends', score, conn)
+                
+            return score
+            
+        except Exception as e:
+            # Increase backoff time exponentially on failures
+            retry_count += 1
+            _backoff_time = min(120.0, _backoff_time * 2.0)
+            _last_trends_call = time.time()
+            print(f"Google Trends error for '{keyword}': {e}")
+            time.sleep(_backoff_time)  # Wait before retry
+    
+    # If all retries failed but we have cached data, use it
+    if conn and cached_value is not None:
+        return cached_value
         
-    except Exception as e:
-        # Increase backoff time exponentially
-        _backoff_time = min(60.0, _backoff_time * 2.0)
-        _last_trends_call = time.time()
-        print(f"Google Trends error for '{keyword}': {e}")
-        
-        # In case of error, still return previous value if available
-        if conn and cached_value is not None:
-            return cached_value
-        return 0.0
+    # No data available, return 0
+    return 0.0
 
 # Wikipedia pageviews
 def fetch_wiki_pageviews(page_title: str) -> float:
@@ -799,9 +843,9 @@ def fetch_wiki_pageviews(page_title: str) -> float:
     if not page_title:
         return 0.0
     try:
-        # Fix here: use datetime.now(timezone.utc) instead of utcnow
-        end = datetime.now(timezone.utc).date() - datetime.timedelta(days=1)
-        start = end - datetime.timedelta(days=89)
+        # You already have the correct imports at the top, just use timedelta directly
+        end = datetime.now(timezone.utc).date() - timedelta(days=1)
+        start = end - timedelta(days=89)
         url = (
             f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
             f"en.wikipedia/all-access/user/{requests.utils.quote(page_title)}/daily/"

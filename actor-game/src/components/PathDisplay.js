@@ -14,13 +14,12 @@ function PathDisplay({ path }) {
         <div className="path-nodes">
           {path.map((node, index) => (
             <React.Fragment key={index}>
-              {index % 2 === 0 ? (
-                // Actor nodes (even indices)
+              {/* Render nodes with proper type checking */}
+              {node.type === 'actor' ? (
                 <div className="path-node actor-node">
                   <ActorCard actor={node} />
                 </div>
               ) : (
-                // Media nodes (odd indices)
                 <div className="path-node media-node">
                   <MediaCard media={node} />
                 </div>
