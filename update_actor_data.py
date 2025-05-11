@@ -692,6 +692,7 @@ _pytrends = None
 def get_pytrends():
     global _pytrends
     if _pytrends is None:
+        print("Initializing Google Trends client...")
         _pytrends = TrendReq(hl="en-GB", tz=360)
     return _pytrends
 
@@ -916,6 +917,9 @@ _popularity_cache = {
 # Create metrics database connection
 metrics_db_path = "actor-game/public/metrics_cache.db"
 metrics_conn = sqlite3.connect(metrics_db_path)
+
+print("Script starting...")
+print(f"Python version: {sys.version}")
 
 for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
