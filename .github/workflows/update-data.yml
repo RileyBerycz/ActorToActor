@@ -37,7 +37,7 @@ jobs:
       - name: Restore checkpoint if exists
         uses: actions/cache@v3
         with:
-          path: ./checkpoint.json
+          path: ./actor-game/public/checkpoint.json  # FIXED
           key: ${{ runner.os }}-checkpoint-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-checkpoint-
@@ -51,9 +51,9 @@ jobs:
           
       - name: Save checkpoint for next run
         uses: actions/cache/save@v3
-        if: always()  # Save checkpoint even if job fails
+        if: always()
         with:
-          path: ./checkpoint.json
+          path: ./actor-game/public/checkpoint.json  # FIXED
           key: ${{ runner.os }}-checkpoint-${{ github.run_id }}
       
       - name: Commit and push if changed
