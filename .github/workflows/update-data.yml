@@ -4,6 +4,17 @@ on:
   schedule:
     - cron: '0 2 * * 0'  # Runs at 2 AM every Sunday
   workflow_dispatch:      # Allows manual triggering
+    inputs:
+      max_pages:
+        description: 'Number of pages to process (max 200000)'
+        required: true
+        default: '1000'
+        type: number
+      update_default:
+        description: 'Save this value as the new default?'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   update_data:
@@ -35,6 +46,8 @@ jobs:
         run: python update_actor_data.py
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_MAX_PAGES: ${{ github.event.inputs.max_pages || '1000' }}
+          UPDATE_DEFAULT: ${{ github.event.inputs.update_default || 'false' }}
           
       - name: Save checkpoint for next run
         uses: actions/cache/save@v3
@@ -69,3 +82,13 @@ jobs:
           else
             echo "Checkpoint file not found, cannot determine completion status."
           fi
+      
+      - name: Update default value if requested
+        if: ${{ github.event.inputs.update_default == true }}
+        run: |
+          echo ${{ github.event.inputs.max_pages }} > actor-game/public/default_pages.txt
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add actor-game/public/default_pages.txt
+          git commit -m "Update default page count to ${{ github.event.inputs.max_pages }}" || echo "No changes to commit"
+          git push

@@ -46,7 +46,44 @@ POSTER_SIZE = "w342"
 # =============================================================================
 # DATA COLLECTION SETTINGS
 # =============================================================================
-TOTAL_PAGES = 1000                # Number of pages of popular actors to fetch
+# Get configurable page limit from environment variable with default and hard cap
+# Hard cap is set to 200000 based on TMDB API limitations (reported 202017 but 400 error)
+MAX_POSSIBLE_PAGES = 200000
+DEFAULT_PAGES_FILE = "actor-game/public/default_pages.txt"
+
+# Try to load custom default from file
+try:
+    with open(DEFAULT_PAGES_FILE, 'r') as f:
+        DEFAULT_PAGES = int(f.read().strip())
+        print(f"Using saved default page count: {DEFAULT_PAGES}")
+except (FileNotFoundError, ValueError):
+    DEFAULT_PAGES = 1000
+    print(f"Using built-in default page count: {DEFAULT_PAGES}")
+
+# Get user-specified value for current run
+user_value = os.environ.get("TMDB_MAX_PAGES", str(DEFAULT_PAGES))
+try:
+    requested_pages = int(user_value)
+    if requested_pages > MAX_POSSIBLE_PAGES:
+        print(f"⚠️ Requested {requested_pages} pages exceeds maximum of {MAX_POSSIBLE_PAGES}. Capping at maximum.")
+        TOTAL_PAGES = MAX_POSSIBLE_PAGES
+    else:
+        TOTAL_PAGES = requested_pages
+except ValueError:
+    print(f"⚠️ Invalid page count '{user_value}'. Using default of {DEFAULT_PAGES}.")
+    TOTAL_PAGES = DEFAULT_PAGES
+
+# Check if we should update the default value for future runs
+update_default = os.environ.get("UPDATE_DEFAULT", "false").lower() == "true"
+if update_default and TOTAL_PAGES != DEFAULT_PAGES:
+    try:
+        os.makedirs(os.path.dirname(DEFAULT_PAGES_FILE), exist_ok=True)
+        with open(DEFAULT_PAGES_FILE, 'w') as f:
+            f.write(str(TOTAL_PAGES))
+        print(f"✅ Updated default page count to {TOTAL_PAGES} for future runs")
+    except Exception as e:
+        print(f"⚠️ Failed to update default page count: {e}")
+
 MIN_CREDIT_POPULARITY = 1.0       # Minimum popularity for movie/TV credits to include
 CHECKPOINT_FILE = "actor-game/public/checkpoint.json"
 MAX_RUNTIME_HOURS = 4             # Exit after this many hours to allow clean completion
@@ -528,6 +565,7 @@ max_runtime_seconds = MAX_RUNTIME_HOURS * 60 * 60
 
 print(f"Starting data collection from page {start_page}/{TOTAL_PAGES}")
 print(f"Already processed {len(processed_actors)} actors")
+print(f"Collection configured for maximum {TOTAL_PAGES} pages (of {MAX_POSSIBLE_PAGES} available)")
 
 # Initialize MCU cache to avoid repeat API calls for MCU detection
 mcu_cache = {'movie': {}, 'tv': {}, 'person': {}}
