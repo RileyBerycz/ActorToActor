@@ -304,7 +304,8 @@ const handlePathComplete = (completedPath) => {
   console.log("Connection count:", connectionCount);
   
   // Store the cleaned path and connection count for display
-  setOptimalPath(uniquePath);
+  const actualOptimalPath = calculateOptimalPath(startActor.id, targetActor.id);
+  setOptimalPath(actualOptimalPath);
   setPathConnectionCount(connectionCount);
   setGamePhase('completed');
 };

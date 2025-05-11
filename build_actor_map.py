@@ -18,7 +18,8 @@ REGIONS_TO_PROCESS = ['GLOBAL', 'US', 'UK']  # Prioritize these regions for conn
 DIFFICULTY_CONFIG = {
     'easy': {'min_connections': 1, 'max_connections': 3, 'count': 1000},
     'normal': {'min_connections': 3, 'max_connections': 5, 'count': 1000},
-    'hard': {'min_connections': 5, 'max_connections': 8, 'count': 1000}
+    # Make hard mode more achievable but still challenging
+    'hard': {'min_connections': 4, 'max_connections': 7, 'count': 1000}  # Reduced from 5-8
 }
 
 def load_actor_data(region):
@@ -173,7 +174,7 @@ def build_actor_graph(actors, include_tv=True):
     
     # Process TV credits with filtering heuristics.
     if include_tv:
-        excluded_keywords = ['talk', 'game', 'reality', 'news', 'award']
+        excluded_keywords = ['talk', 'game', 'reality', 'news', 'award', 'interview', 'host', 'special', 'ceremony', 'documentary']
         for actor_id, actor in tqdm(actors.items(), desc="Processing TV credits"):
             for credit in actor.get('tv_credits', []):
                 tv_title = credit.get('title', '').lower()
@@ -183,6 +184,10 @@ def build_actor_graph(actors, include_tv=True):
                     continue
                 # Skip if the TV title contains keywords suggesting a non-scripted format.
                 if any(keyword in tv_title for keyword in excluded_keywords):
+                    continue
+                # Check if character name matches actor's real name
+                actor_name_parts = actor['name'].lower().split()
+                if character and any(part in character.lower() for part in actor_name_parts if len(part) > 2):
                     continue
                 show_id = credit['id']
                 credit_to_actors.setdefault(show_id, []).append(actor_id)
@@ -328,13 +333,10 @@ def create_connection_database(paths_by_difficulty):
     """Create SQLite database with actor connections"""
     print("Creating connection database...")
     
-    if not os.path.exists(os.path.dirname(CONNECTION_DB_PATH)):
-        alt_path = os.path.join(os.getcwd(), "actor-game", "public", "actor_connections.db")
-        print(f"Primary path {CONNECTION_DB_PATH} not found, using {alt_path} instead")
-        connection_path = alt_path
-    else:
-        connection_path = CONNECTION_DB_PATH
-        
+    # Always use the standard path and ensure the directory exists
+    os.makedirs(os.path.dirname(CONNECTION_DB_PATH), exist_ok=True)
+    connection_path = CONNECTION_DB_PATH
+    
     if os.path.exists(connection_path):
         os.remove(connection_path)
     

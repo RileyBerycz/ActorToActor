@@ -80,6 +80,54 @@ function GameControls({
       return;
     }
 
+    // FIX: Always search for actors in easy mode
+    if (settings.difficulty === 'easy') {
+      searchType = 'actor';
+      
+      // Search for actors that have shared movies with the last actor
+      const lastActor = path.length > 0 ? path[path.length - 1] : startActor;
+      
+      if (!lastActor || lastActor.type !== 'actor') {
+        return;
+      }
+      
+      // Find all actors who appeared in this movie
+      const matchingActors = Object.entries(actorData)
+        .filter(([actorId, actor]) => {
+          // Check if actor was in this movie
+          const wasInMovie = actor.movie_credits.some(credit => 
+            credit.id === lastActor.id
+          ) || (settings.difficulty === 'hard' && actor.tv_credits ? 
+            actor.tv_credits.some(credit => credit.id === lastActor.id) : false);
+          
+          // Include the target actor if they were in this movie!
+          const isTargetActor = targetActor && actorId === targetActor.id && wasInMovie;
+          
+          // Don't show actors already in the path EXCEPT the target actor if valid
+          const alreadyInPath = path.some(item => 
+            item.type === 'actor' && item.id === actorId && !isTargetActor
+          );
+          
+          // Match name to query
+          const nameMatches = actor.name.toLowerCase().includes(lowerQuery);
+          
+          return wasInMovie && !alreadyInPath && nameMatches;
+        })
+        .map(([id, actor]) => ({
+          id,
+          type: 'actor',
+          name: actor.name || 'Unknown Actor',
+          profile_path: actor.profile_path,
+          popularity: actor.popularity || 0
+        }))
+        .sort((a, b) => b.popularity - a.popularity)
+        .slice(0, 10);
+      
+      setSearchResults(matchingActors);
+      
+      return; // Exit early from the function
+    }
+    
     const lowerQuery = query.toLowerCase();
     
     if (searchType === 'actor') {
@@ -209,6 +257,12 @@ function GameControls({
 
   // Fix handleSelectResult to properly check for win condition
   const handleSelectResult = (result) => {
+    // Special handling for easy mode - use the helper function
+    if (settings.difficulty === 'easy' && result.type === 'actor') {
+      handleEasyModeActorSelection(result);
+      return;
+    }
+    
     // Add logging to debug
     console.log("Selected result:", result);
     console.log("Target actor:", targetActor);
@@ -244,9 +298,12 @@ function GameControls({
       <div className="search-container">
         {/* Display instructions based on what we're searching for */}
         <div className="search-instructions">
-          {searchType === 'movie' 
-            ? `Find a movie that ${lastItem?.name || ''} appeared in`
-            : `Find an actor who appeared in ${lastItem?.title || ''}`}
+          {searchType === 'actor' 
+            ? `Find an actor who appeared in ${lastItem?.title || ''}`
+            : settings.difficulty === 'hard'
+              ? `Find a movie or TV show that ${lastItem?.name || ''} appeared in`
+              : `Find a movie that ${lastItem?.name || ''} appeared in`
+          }
         </div>
         
         <input
