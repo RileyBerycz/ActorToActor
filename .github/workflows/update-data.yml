@@ -51,6 +51,7 @@ jobs:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TMDB_MAX_PAGES: ${{ github.event.inputs.max_pages || '1000' }}
           UPDATE_DEFAULT: ${{ github.event.inputs.update_default || 'false' }}
+          FORCE_CLEAN_DB: ${{ github.event.inputs.refresh_db || 'false' }}
           
       - name: Generate actor connections
         run: python build_actor_map.py

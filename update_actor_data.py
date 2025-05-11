@@ -466,7 +466,7 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
 # =============================================================================
 def setup_database():
     """
-    Create a single SQLite database with all required tables
+    Create or open the SQLite database with all required tables
     
     Returns:
         tuple: (connection, cursor)
@@ -476,21 +476,24 @@ def setup_database():
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
-    # Remove existing database if any
-    if os.path.exists(db_path):
+    # Check if we should force a clean database based on environment variable
+    force_clean = os.environ.get("FORCE_CLEAN_DB", "false").lower() == "true"
+    
+    if force_clean and os.path.exists(db_path):
+        print("Forced clean database requested. Removing existing database.")
         os.remove(db_path)
     
-    # Create new database
+    # Connect to existing database or create a new one
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Create tables
+    # Create tables if they don't exist (using IF NOT EXISTS)
     cursor.execute('''
-    CREATE TABLE actors (
+    CREATE TABLE IF NOT EXISTS actors (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
         popularity REAL,
-        tmdb_popularity REAL,  -- Keep for reference
+        tmdb_popularity REAL,
         profile_path TEXT,
         place_of_birth TEXT,
         years_active INTEGER,
@@ -499,7 +502,7 @@ def setup_database():
     ''')
     
     cursor.execute('''
-    CREATE TABLE actor_regions (
+    CREATE TABLE IF NOT EXISTS actor_regions (
         actor_id INTEGER,
         region TEXT,
         popularity_score REAL,
@@ -509,7 +512,7 @@ def setup_database():
     ''')
     
     cursor.execute('''
-    CREATE TABLE movie_credits (
+    CREATE TABLE IF NOT EXISTS movie_credits (
         id INTEGER,
         actor_id INTEGER,
         title TEXT,
@@ -524,7 +527,7 @@ def setup_database():
     ''')
     
     cursor.execute('''
-    CREATE TABLE tv_credits (
+    CREATE TABLE IF NOT EXISTS tv_credits (
         id INTEGER,
         actor_id INTEGER,
         name TEXT,
