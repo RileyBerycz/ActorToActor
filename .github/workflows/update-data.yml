@@ -3,7 +3,7 @@ name: Update Actor Data
 on:
   schedule:
     - cron: '0 2 * * 0'  # Runs at 2 AM every Sunday
-  workflow_dispatch:      # Allows manual triggering
+  workflow_dispatch:
     inputs:
       max_pages:
         description: 'Number of pages to process (max 200000)'
@@ -11,10 +11,13 @@ on:
         default: '1000'
         type: number
       update_default:
-        description: 'Save this value as the new default?'
+        description: 'Save as new default?'
         required: true
         default: false
         type: boolean
+
+permissions:
+  contents: write
 
 jobs:
   update_data:
@@ -32,12 +35,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pycountry
+          pip install requests beautifulsoup4 pytrends pycountry
           
       - name: Restore checkpoint if exists
         uses: actions/cache@v3
         with:
-          path: ./actor-game/public/checkpoint.json  # FIXED
+          path: ./checkpoint.json
           key: ${{ runner.os }}-checkpoint-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-checkpoint-
@@ -51,9 +54,9 @@ jobs:
           
       - name: Save checkpoint for next run
         uses: actions/cache/save@v3
-        if: always()
+        if: always()  # Save checkpoint even if job fails
         with:
-          path: ./actor-game/public/checkpoint.json  # FIXED
+          path: ./checkpoint.json
           key: ${{ runner.os }}-checkpoint-${{ github.run_id }}
       
       - name: Commit and push if changed
@@ -67,8 +70,8 @@ jobs:
       - name: Check if data collection is complete
         if: success() || failure()  # Run this step regardless of previous step result
         run: |
-          if [ -f "./actor-game/public/checkpoint.json" ]; then
-            COMPLETED=$(python -c "import json; print(json.load(open('./actor-game/public/checkpoint.json'))['completed'])")
+          if [ -f "./checkpoint.json" ]; then
+            COMPLETED=$(python -c "import json; print(json.load(open('./checkpoint.json'))['completed'])")
             if [ "$COMPLETED" != "True" ]; then
               echo "Data collection is incomplete. Triggering another workflow run."
               curl -X POST \
