@@ -12,6 +12,7 @@ import re
 from requests.exceptions import ConnectionError, Timeout, RequestException
 from bs4 import BeautifulSoup
 from pytrends.request import TrendReq
+from datetime import datetime, timezone, timedelta
 
 # =============================================================================
 # ACTOR TO ACTOR GAME - DATA COLLECTION SCRIPT
@@ -535,6 +536,16 @@ def setup_database():
     )
     ''')
     
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS metrics_timestamps (
+        actor_name TEXT,
+        metric_type TEXT,
+        value REAL,
+        last_updated TEXT,
+        PRIMARY KEY (actor_name, metric_type)
+    )
+    ''')
+    
     conn.commit()
     return conn, cursor
 
@@ -647,10 +658,6 @@ try:
 except FileNotFoundError:
     print("No MCU cache found, starting with empty cache")
 
-# =============================================================================
-# EXTERNAL POPULARITY DATA SOURCES
-# =============================================================================
-
 # Initialize Google Trends client
 _pytrends = None
 def get_pytrends():
@@ -659,18 +666,131 @@ def get_pytrends():
         _pytrends = TrendReq(hl="en-GB", tz=360)
     return _pytrends
 
+_last_trends_call = 0
+_backoff_time = 1.0
+
+def should_update_metric(keyword, metric_type, conn, refresh_days=30):
+    """
+    Determines if we should make a new API call for this metric
+    based on when it was last updated.
+    
+    Args:
+        keyword: Search term (actor name, movie title)
+        metric_type: Type of metric ('trends', 'wiki', 'awards')
+        conn: Database connection
+        refresh_days: Number of days before refreshing data (default: 30)
+        
+    Returns:
+        tuple: (should_update, cached_value)
+    """
+    try:
+        # Create the metrics tracking table if it doesn't exist
+        conn.execute('''
+        CREATE TABLE IF NOT EXISTS metrics_timestamps (
+            keyword TEXT,
+            metric_type TEXT,
+            value REAL,
+            last_updated TEXT,
+            PRIMARY KEY (keyword, metric_type)
+        )
+        ''')
+        conn.commit()
+        
+        # Check when this metric was last updated
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT value, last_updated FROM metrics_timestamps WHERE keyword = ? AND metric_type = ?", 
+            (keyword, metric_type)
+        )
+        result = cursor.fetchone()
+        
+        if result:
+            value, timestamp_str = result
+            last_update = datetime.fromisoformat(timestamp_str)
+            now = datetime.now(timezone.utc)
+            
+            # If data is newer than refresh_days, use cached value
+            if (now - last_update) < timedelta(days=refresh_days):
+                return False, value
+                
+        # Data doesn't exist or is too old
+        return True, None
+            
+    except Exception as e:
+        print(f"Error checking metric timestamp: {e}")
+        # If in doubt, fetch fresh data
+        return True, None
+
+def save_metric_value(keyword, metric_type, value, conn):
+    """
+    Save a metric value with current timestamp
+    
+    Args:
+        keyword: Search term (actor name, movie title)
+        metric_type: Type of metric ('trends', 'wiki', 'awards')
+        value: Numeric value to save
+        conn: Database connection
+    """
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO metrics_timestamps (keyword, metric_type, value, last_updated) VALUES (?, ?, ?, ?)",
+            (keyword, metric_type, value, now)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Error saving metric value: {e}")
+
 # Google Trends - Search interest
-def fetch_search_interest(keyword: str) -> float:
-    """Get recent search interest from Google Trends"""
+def fetch_search_interest(keyword: str, conn=None) -> float:
+    """Get recent search interest with time-based refresh"""
     if not keyword:
         return 0.0
+    
+    # If we have a connection, check if we should update
+    if conn:
+        should_update, cached_value = should_update_metric(keyword, 'trends', conn)
+        if not should_update and cached_value is not None:
+            return cached_value
+    
+    # If we need to fetch new data, use exponential backoff
+    global _last_trends_call, _backoff_time
+    
     try:
+        # Respect rate limiting
+        now = time.time()
+        if _last_trends_call > 0:
+            time_since_last = now - _last_trends_call
+            if time_since_last < _backoff_time:
+                wait_time = _backoff_time - time_since_last
+                print(f"Waiting {wait_time:.1f}s for Google Trends rate limit...")
+                time.sleep(wait_time)
+        
+        # Make the API call
         pytrends = get_pytrends()
         pytrends.build_payload([keyword], timeframe="today 3-m")
         vals = pytrends.interest_over_time()[keyword]
-        return float(vals.mean())
+        score = float(vals.mean()) / 100.0
+        
+        # Success - reduce backoff time
+        _backoff_time = max(1.0, _backoff_time * 0.8)
+        _last_trends_call = time.time()
+        
+        # Cache the result if we have a connection
+        if conn:
+            save_metric_value(keyword, 'trends', score, conn)
+            
+        return score
+        
     except Exception as e:
+        # Increase backoff time exponentially
+        _backoff_time = min(60.0, _backoff_time * 2.0)
+        _last_trends_call = time.time()
         print(f"Google Trends error for '{keyword}': {e}")
+        
+        # In case of error, still return previous value if available
+        if conn and cached_value is not None:
+            return cached_value
         return 0.0
 
 # Wikipedia pageviews
@@ -679,8 +799,9 @@ def fetch_wiki_pageviews(page_title: str) -> float:
     if not page_title:
         return 0.0
     try:
-        end = datetime.utcnow().date() - timedelta(days=1)
-        start = end - timedelta(days=89)
+        # Fix here: use datetime.now(timezone.utc) instead of utcnow
+        end = datetime.now(timezone.utc).date() - datetime.timedelta(days=1)
+        start = end - datetime.timedelta(days=89)
         url = (
             f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
             f"en.wikipedia/all-access/user/{requests.utils.quote(page_title)}/daily/"
@@ -748,6 +869,10 @@ _popularity_cache = {
 # =============================================================================
 # MAIN DATA COLLECTION LOOP
 # =============================================================================
+# Create metrics database connection
+metrics_db_path = "actor-game/public/metrics_cache.db"
+metrics_conn = sqlite3.connect(metrics_db_path)
+
 for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
     
@@ -935,7 +1060,7 @@ for page in range(start_page, TOTAL_PAGES + 1):
             num_credits,
             years_active,
             avg_credit_popularity,
-            actor_name  # Pass the actor name for external data lookups
+            actor_name  # Pass actor name for external data lookup
         )
         
         print(f"  TMDB Popularity: {tmdb_popularity:.2f}, Custom Popularity: {custom_popularity:.2f}")
