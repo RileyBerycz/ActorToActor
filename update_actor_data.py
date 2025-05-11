@@ -8,7 +8,10 @@ import random
 import pycountry
 import sys
 import datetime
+import re
 from requests.exceptions import ConnectionError, Timeout, RequestException
+from bs4 import BeautifulSoup
+from pytrends.request import TrendReq
 
 # =============================================================================
 # ACTOR TO ACTOR GAME - DATA COLLECTION SCRIPT
@@ -339,61 +342,121 @@ def calculate_years_active(movie_credits, tv_credits):
 
 def calculate_credit_popularity(movie_credits, tv_credits):
     """
-    Calculate average popularity of an actor's credits
+    Calculate average popularity of an actor's credits with enhanced metrics
     
     Args:
         movie_credits: List of movie credits
         tv_credits: List of TV credits
         
     Returns:
-        Float representing average popularity
+        Float representing enhanced average popularity
     """
     all_popularity_scores = []
     
+    # Process movie credits with enhanced scoring
     for movie in movie_credits:
-        pop = movie.get("popularity", 0)
-        if pop > 0:
-            all_popularity_scores.append(pop)
+        # Base TMDB popularity
+        base_pop = movie.get("popularity", 0)
+        if base_pop <= 0:
+            continue
+            
+        # Get movie title for external data lookup
+        title = movie.get("title", "")
+        
+        # Get cached search interest or fetch new data
+        search_score = 0
+        if title:
+            if title in _popularity_cache['search_interest']:
+                search_score = _popularity_cache['search_interest'][title]
+            else:
+                # Limit external API calls to avoid rate limiting
+                if len(_popularity_cache['search_interest']) < 100:  # Limit cache size
+                    search_score = fetch_search_interest(title) * 100
+                    _popularity_cache['search_interest'][title] = search_score
+        
+        # Calculate enhanced score (incorporate search interest)
+        enhanced_pop = base_pop * 0.8 + search_score * 0.2
+        all_popularity_scores.append(enhanced_pop)
     
+    # Process TV credits similarly
     for tv in tv_credits:
-        pop = tv.get("popularity", 0)
-        if pop > 0:
-            all_popularity_scores.append(pop)
+        base_pop = tv.get("popularity", 0)
+        if base_pop <= 0:
+            continue
+            
+        name = tv.get("name", "")
+        search_score = 0
+        if name:
+            if name in _popularity_cache['search_interest']:
+                search_score = _popularity_cache['search_interest'][name]
+            else:
+                if len(_popularity_cache['search_interest']) < 100:
+                    search_score = fetch_search_interest(name) * 100
+                    _popularity_cache['search_interest'][name] = search_score
+        
+        enhanced_pop = base_pop * 0.8 + search_score * 0.2
+        all_popularity_scores.append(enhanced_pop)
     
     if not all_popularity_scores:
         return 0
     
     return sum(all_popularity_scores) / len(all_popularity_scores)
 
-def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity):
+def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name=""):
     """
-    Calculate a more balanced popularity score that considers:
-    - Recent TMDB popularity (trending status)
-    - Number of credits (prolific career)
-    - Years active (longevity)
-    - Average credit popularity (quality of work)
+    Calculate enhanced popularity score using multiple data sources
     
     Args:
         tmdb_popularity: Raw popularity from TMDB
         num_credits: Number of credits
         years_active: Years active in industry
         avg_credit_popularity: Average popularity of credits
-        
+        actor_name: Name of the actor for external data lookup
+    
     Returns:
-        Float representing custom balanced popularity score
+        Float representing enhanced balanced popularity score
     """
+    # Basic factors from existing code
     longevity_factor = min(years_active / 10, 1.0)  # Cap at 10 years
     credits_factor = min(num_credits / 20, 1.0)     # Cap at 20 credits
     
-    # Balanced formula giving weight to all factors
-    custom_score = (
-        tmdb_popularity * 0.3 +                # Recent popularity (30%)
-        avg_credit_popularity * 0.2 +          # Quality of work (20%) 
-        credits_factor * 25 +                  # Quantity of work (25%)
-        longevity_factor * 25                  # Career longevity (25%)
+    # Get external data if actor name is provided
+    wiki_pageviews = 0
+    awards_score = 0
+    search_interest = 0
+    
+    if actor_name:
+        # Get cached values or fetch new data
+        if actor_name in _popularity_cache['wiki_pageviews']:
+            wiki_pageviews = _popularity_cache['wiki_pageviews'][actor_name] 
+        else:
+            wiki_pageviews = fetch_wiki_pageviews(actor_name) * 100
+            _popularity_cache['wiki_pageviews'][actor_name] = wiki_pageviews
+            
+        if actor_name in _popularity_cache['awards']:
+            awards_score = _popularity_cache['awards'][actor_name]
+        else:
+            awards_score = fetch_awards_score(actor_name) * 100
+            _popularity_cache['awards'][actor_name] = awards_score
+            
+        if actor_name in _popularity_cache['search_interest']:
+            search_interest = _popularity_cache['search_interest'][actor_name]
+        else:
+            search_interest = fetch_search_interest(actor_name) * 100
+            _popularity_cache['search_interest'][actor_name] = search_interest
+    
+    # Enhanced scoring formula with multiple data sources
+    enhanced_score = (
+        tmdb_popularity * 0.25 +                # TMDB popularity (25%)
+        avg_credit_popularity * 0.25 +          # Quality of work (25%) 
+        wiki_pageviews * 0.10 +                 # Wikipedia popularity (10%)
+        search_interest * 0.10 +                # Search interest (10%)
+        awards_score * 0.10 +                   # Awards recognition (10%)
+        credits_factor * 10 +                   # Quantity of work (10%)
+        longevity_factor * 10                   # Career longevity (10%)
     )
     
-    return custom_score
+    return enhanced_score
 
 # =============================================================================
 # DATABASE SETUP
@@ -585,6 +648,104 @@ except FileNotFoundError:
     print("No MCU cache found, starting with empty cache")
 
 # =============================================================================
+# EXTERNAL POPULARITY DATA SOURCES
+# =============================================================================
+
+# Initialize Google Trends client
+_pytrends = None
+def get_pytrends():
+    global _pytrends
+    if _pytrends is None:
+        _pytrends = TrendReq(hl="en-GB", tz=360)
+    return _pytrends
+
+# Google Trends - Search interest
+def fetch_search_interest(keyword: str) -> float:
+    """Get recent search interest from Google Trends"""
+    if not keyword:
+        return 0.0
+    try:
+        pytrends = get_pytrends()
+        pytrends.build_payload([keyword], timeframe="today 3-m")
+        vals = pytrends.interest_over_time()[keyword]
+        return float(vals.mean())
+    except Exception as e:
+        print(f"Google Trends error for '{keyword}': {e}")
+        return 0.0
+
+# Wikipedia pageviews
+def fetch_wiki_pageviews(page_title: str) -> float:
+    """Get Wikipedia pageviews over the last 90 days"""
+    if not page_title:
+        return 0.0
+    try:
+        end = datetime.utcnow().date() - timedelta(days=1)
+        start = end - timedelta(days=89)
+        url = (
+            f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
+            f"en.wikipedia/all-access/user/{requests.utils.quote(page_title)}/daily/"
+            f"{start.strftime('%Y%m%d')}/{end.strftime('%Y%m%d')}"
+        )
+        r = requests.get(url, timeout=5)
+        if r.status_code != 200:
+            return 0.0
+        data = r.json().get("items", [])
+        total = sum(item.get("views", 0) for item in data)
+        # Normalize against 1M views (cap at 1.0)
+        return min(total / 1000000.0, 1.0)
+    except Exception as e:
+        print(f"Wikipedia pageviews error for '{page_title}': {e}")
+        return 0.0
+
+# Awards and nominations from Wikipedia
+def fetch_awards_score(actor_name: str) -> float:
+    """Get awards and nominations data from Wikipedia"""
+    if not actor_name:
+        return 0.0
+    try:
+        # Resolve actor page via search API
+        s = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": actor_name,
+                "format": "json",
+            },
+            timeout=5
+        ).json()
+        if not s["query"]["search"]:
+            return 0.0
+        title = s["query"]["search"][0]["title"]
+        # Fetch page HTML
+        html = requests.get(f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}", timeout=5).text
+        soup = BeautifulSoup(html, "html.parser")
+        # Look for an infobox row containing awards
+        infobox = soup.find("table", {"class": "infobox"})
+        wins = noms = 0
+        if infobox:
+            for row in infobox.find_all("tr"):
+                hdr = row.find("th")
+                if hdr and "awards" in hdr.text.lower():
+                    txt = row.get_text(" ", strip=True)
+                    # find numbers before 'win' and 'nom'
+                    wins += sum(int(m.group(1)) for m in re.finditer(r"(\d+)\s+win", txt, re.I))
+                    noms += sum(int(m.group(1)) for m in re.finditer(r"(\d+)\s+nom", txt, re.I))
+                    break
+        raw = (wins * 0.7 + noms * 0.3) / 20.0  # Normalize against 20 awards
+        return min(raw, 1.0)
+    except Exception as e:
+        print(f"Wikipedia awards error for '{actor_name}': {e}")
+        return 0.0
+
+# Cache for API responses to avoid duplicate requests
+_popularity_cache = {
+    'search_interest': {},
+    'wiki_pageviews': {},
+    'awards': {}
+}
+
+# =============================================================================
 # MAIN DATA COLLECTION LOOP
 # =============================================================================
 for page in range(start_page, TOTAL_PAGES + 1):
@@ -773,7 +934,8 @@ for page in range(start_page, TOTAL_PAGES + 1):
             tmdb_popularity, 
             num_credits,
             years_active,
-            avg_credit_popularity
+            avg_credit_popularity,
+            actor_name  # Pass the actor name for external data lookups
         )
         
         print(f"  TMDB Popularity: {tmdb_popularity:.2f}, Custom Popularity: {custom_popularity:.2f}")

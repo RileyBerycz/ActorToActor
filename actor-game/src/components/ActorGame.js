@@ -809,6 +809,39 @@ const handlePathComplete = (completedPath) => {
     }
   }, [actorData, loading, loadingProgress, startActor, targetActor]);
 
+  const renderPath = () => {
+    // Only render start actor once
+    return (
+      <div className="current-path">
+        {startActor && <span className="path-actor">{startActor.name}</span>}
+        
+        {path.map((step, index) => (
+          <div key={`path-step-${index}`} className="path-step">
+            <div className="path-arrow">→</div>
+            <div className="path-movie">
+              {step.movie && (
+                <>
+                  <span className="movie-title">{step.movie.title}</span>
+                  {step.movie.poster_path && (
+                    <img 
+                      src={`https://image.tmdb.org/t/p/w92${step.movie.poster_path}`}
+                      alt={step.movie.title}
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src = '/placeholder-poster.jpg'; // Add a placeholder image
+                      }}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+            <div className="path-actor">{step.actor.name}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="loading-container">
@@ -952,6 +985,8 @@ const handlePathComplete = (completedPath) => {
           </button>
         </div>
       )}
+      
+      {renderPath()}
     </div>
   );
 }
