@@ -1474,7 +1474,7 @@ def get_social_media_followers_from_wikipedia(actor_name):
                         match = re.search(rf"{platform}.*?([\d,]+)", text, re.I)
                         if match:
                             followers[platform.lower()] = int(match.group(1).replace(",", ""))
-        return normalize_followers(followers)
+        return followers
     except Exception as e:
         print(f"Error fetching social media followers for '{actor_name}': {e}")
         return {}
