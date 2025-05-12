@@ -11,7 +11,6 @@ import datetime
 import re
 from requests.exceptions import ConnectionError, Timeout, RequestException
 from bs4 import BeautifulSoup
-from pytrends.request import TrendReq
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 pd.set_option('future.no_silent_downcasting', True)
@@ -346,6 +345,7 @@ def calculate_years_active(movie_credits, tv_credits):
 def calculate_credit_popularity(movie_credits, tv_credits):
     """
     Calculate average popularity of an actor's credits with enhanced metrics
+    including quality metrics based on TMDB ratings
     
     Args:
         movie_credits: List of movie credits
@@ -355,6 +355,7 @@ def calculate_credit_popularity(movie_credits, tv_credits):
         Float representing enhanced average popularity
     """
     all_popularity_scores = []
+    quality_scores = []  # Track quality scores separately
     
     # Process movie credits with enhanced scoring
     for movie in movie_credits:
@@ -363,7 +364,7 @@ def calculate_credit_popularity(movie_credits, tv_credits):
         if base_pop <= 0:
             continue
             
-        # Get movie title for external data lookup
+        movie_id = movie["id"]
         title = movie.get("title", "")
         
         # Get cached search interest or fetch new data
@@ -373,13 +374,41 @@ def calculate_credit_popularity(movie_credits, tv_credits):
                 search_score = _popularity_cache['search_interest'][title]
             else:
                 # Limit external API calls to avoid rate limiting
-                if len(_popularity_cache['search_interest']) < 100:  # Limit cache size
+                if len(_popularity_cache['search_interest']) < 100:
                     search_score = fetch_search_interest(title) * 100
                     _popularity_cache['search_interest'][title] = search_score
         
-        # Calculate enhanced score (incorporate search interest)
+        # Calculate enhanced popularity score
         enhanced_pop = base_pop * 0.8 + search_score * 0.2
         all_popularity_scores.append(enhanced_pop)
+        
+        # Quality metrics - Get movie details for rating data
+        # Cache movie quality data to avoid duplicate API calls
+        quality_key = f"quality_movie_{movie_id}"
+        if quality_key in _popularity_cache:
+            quality_score = _popularity_cache[quality_key]
+            if quality_score > 0:
+                quality_scores.append(quality_score)
+        else:
+            # Fetch movie details to get rating data
+            movie_params = {"api_key": TMDB_API_KEY, "append_to_response": "credits,reviews"}
+            movie_data = make_api_request(f"{BASE_URL}/movie/{movie_id}", movie_params)
+            
+            if movie_data:
+                vote_avg = movie_data.get('vote_average', 0)
+                vote_count = movie_data.get('vote_count', 0)
+                
+                # Only consider movies with sufficient votes
+                if vote_avg > 0 and vote_count > 20:
+                    # Normalize vote_average from 0-10 to 0-1
+                    normalized_score = vote_avg / 10.0
+                    # Weight by number of votes (more votes = more confidence)
+                    confidence = min(vote_count / 1000, 1.0)  
+                    weighted_score = normalized_score * confidence
+                    quality_scores.append(weighted_score)
+                    _popularity_cache[quality_key] = weighted_score
+                else:
+                    _popularity_cache[quality_key] = 0
     
     # Process TV credits similarly
     for tv in tv_credits:
@@ -387,6 +416,7 @@ def calculate_credit_popularity(movie_credits, tv_credits):
         if base_pop <= 0:
             continue
             
+        tv_id = tv.get("id", 0)
         name = tv.get("name", "")
         search_score = 0
         if name:
@@ -397,13 +427,51 @@ def calculate_credit_popularity(movie_credits, tv_credits):
                     search_score = fetch_search_interest(name) * 100
                     _popularity_cache['search_interest'][name] = search_score
         
+        # Calculate enhanced popularity score
         enhanced_pop = base_pop * 0.8 + search_score * 0.2
         all_popularity_scores.append(enhanced_pop)
+        
+        # Quality metrics for TV shows
+        quality_key = f"quality_tv_{tv_id}"
+        if quality_key in _popularity_cache:
+            quality_score = _popularity_cache[quality_key]
+            if quality_score > 0:
+                quality_scores.append(quality_score)
+        else:
+            # Get TV show details to fetch rating data
+            tv_params = {"api_key": TMDB_API_KEY}
+            tv_data = make_api_request(f"{BASE_URL}/tv/{tv_id}", tv_params)
+            
+            if tv_data:
+                vote_avg = tv_data.get('vote_average', 0)
+                vote_count = tv_data.get('vote_count', 0)
+                
+                if vote_avg > 0 and vote_count > 20:
+                    normalized_score = vote_avg / 10.0
+                    confidence = min(vote_count / 1000, 1.0)
+                    weighted_score = normalized_score * confidence
+                    quality_scores.append(weighted_score)
+                    _popularity_cache[quality_key] = weighted_score
+                else:
+                    _popularity_cache[quality_key] = 0
     
+    # Calculate combined score from both popularity and quality
     if not all_popularity_scores:
-        return 0
+        popularity_avg = 0
+    else:
+        popularity_avg = sum(all_popularity_scores) / len(all_popularity_scores)
+        
+    # Get top 10 quality scores for their best work
+    quality_scores.sort(reverse=True)
+    top_scores = quality_scores[:10]
     
-    return sum(all_popularity_scores) / len(all_popularity_scores)
+    if not top_scores:
+        quality_avg = 0
+    else:
+        quality_avg = sum(top_scores) / len(top_scores)
+    
+    # Combine popularity and quality (70/30 split)
+    return (popularity_avg * 0.7) + (quality_avg * 100 * 0.3)
 
 def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name=""):
     """
@@ -420,8 +488,8 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         Float representing enhanced balanced popularity score
     """
     # Basic factors from existing code
-    longevity_factor = min(years_active / 10, 1.0)  # Cap at 10 years
-    credits_factor = min(num_credits / 20, 1.0)     # Cap at 20 credits
+    longevity_factor = min(years_active / 15, 1.0)  # Cap at 15 years
+    credits_factor = min(num_credits / 25, 1.0)     # Cap at 25 credits
     
     # Get external data if actor name is provided
     wiki_pageviews = 0
@@ -690,17 +758,6 @@ try:
 except FileNotFoundError:
     print("No MCU cache found, starting with empty cache")
 
-# Initialize Google Trends client
-_pytrends = None
-def get_pytrends():
-    global _pytrends
-    if _pytrends is None:
-        print("Initializing Google Trends client...")
-        _pytrends = TrendReq(hl="en-GB", tz=360)
-    return _pytrends
-
-_last_trends_call = 0
-_backoff_time = 1.0
 
 def should_update_metric(keyword, metric_type, conn, refresh_days=90):
     """
@@ -775,71 +832,103 @@ def save_metric_value(keyword, metric_type, value, conn):
         print(f"Error saving metric value: {e}")
 
 # Google Trends - Search interest
+def fetch_trends_csv(keyword: str) -> float:
+    """
+    Get Google Trends data directly via their CSV API
+    
+    Args:
+        keyword: Search term to look up
+        
+    Returns:
+        Float representing normalized search volume (0-1)
+    """
+    if not keyword:
+        return 0.0
+        
+    try:
+        # Step 1: Get token
+        response = requests.get(
+            "https://trends.google.com/trends/api/explore",
+            params={
+                "hl": "en-US", "tz": 0,
+                "req": json.dumps({
+                    "comparisonItem": [{"keyword": keyword, "geo": "", "time": "today 3-m"}],
+                    "category": 0, "property": ""
+                })
+            },
+            timeout=10
+        )
+        
+        # The first line is garbage, skip it
+        content = response.text.split('\n', 1)[1]
+        data = json.loads(content)
+        token = data["widgets"][0]["token"]
+        
+        # Step 2: Fetch CSV
+        csv_url = (
+            "https://trends.google.com/trends/api/widgetdata/multiline/csv"
+            f"?hl=en-US&req={{\"token\":\"{token}\"}}"
+        )
+        csv_response = requests.get(csv_url, timeout=10)
+        
+        # Parse CSV content
+        lines = csv_response.text.strip().split("\n")
+        if len(lines) <= 2:  # Header + one data point minimum
+            return 0.0
+            
+        # Skip first line which is garbage, second line is header
+        values = []
+        for line in lines[2:]:
+            parts = line.split(",")
+            if len(parts) >= 2:
+                try:
+                    value = float(parts[1])
+                    values.append(value)
+                except ValueError:
+                    pass
+        
+        # Calculate average and normalize
+        if not values:
+            return 0.0
+            
+        avg_value = sum(values) / len(values)
+        return avg_value / 100.0  # Google Trends values are 0-100, normalize to 0-1
+        
+    except Exception as e:
+        print(f"Google Trends CSV error for '{keyword}': {e}")
+        return 0.0
+
+# Replace the existing function with this improved version
 def fetch_search_interest(keyword: str, conn=None) -> float:
-    """Get recent search interest with time-based refresh and better handling"""
+    """Get search interest with better caching and direct CSV method"""
     if not keyword:
         return 0.0
     
     # Check database cache first
     if conn:
-        should_update, cached_value = should_update_metric(keyword, 'trends', conn)
+        should_update, cached_value = should_update_metric(keyword, 'trends', conn, refresh_days=180)
         if not should_update and cached_value is not None:
             return cached_value
     
-    # Use exponential backoff with much longer intervals
-    global _last_trends_call, _backoff_time
-    max_retries = 5
-    retry_count = 0
+    # Add rate limiting
+    global _last_trends_call
+    now = time.time()
+    if _last_trends_call > 0:
+        time_since_last = now - _last_trends_call
+        if time_since_last < 5.0:  # 5-second delay between calls
+            wait_time = 5.0 - time_since_last
+            print(f"Waiting {wait_time:.1f}s for Google Trends rate limit...")
+            time.sleep(wait_time)
     
-    while retry_count < max_retries:
-        try:
-            # Enforce much stricter rate limiting
-            now = time.time()
-            if _last_trends_call > 0:
-                time_since_last = now - _last_trends_call
-                if time_since_last < _backoff_time:
-                    wait_time = _backoff_time - time_since_last
-                    print(f"Waiting {wait_time:.1f}s for Google Trends rate limit...")
-                    time.sleep(wait_time)
-            
-            # Make API call
-            pytrends = get_pytrends()
-            pytrends.build_payload([keyword], timeframe="today 3-m")
-            
-            # Fix pandas warning with proper handling
-            trend_data = pytrends.interest_over_time()
-            if trend_data.empty:
-                score = 0.0
-            else:
-                # Use .copy() to avoid the pandas warning
-                trend_series = trend_data[keyword].copy()
-                trend_series = trend_series.fillna(0)
-                score = float(trend_series.mean()) / 100.0
-            
-            # Success - reduce backoff time but keep it substantial
-            _backoff_time = max(5.0, _backoff_time * 0.9)
-            _last_trends_call = time.time()
-            
-            # Cache the successful result
-            if conn:
-                save_metric_value(keyword, 'trends', score, conn)
-                
-            return score
-            
-        except Exception as e:
-            # Increase backoff time exponentially on failures
-            retry_count += 1
-            _backoff_time = min(120.0, _backoff_time * 2.0)
-            _last_trends_call = time.time()
-            print(f"Google Trends error for '{keyword}': {e}")
-            time.sleep(_backoff_time)  # Wait before retry
+    # Use direct CSV method instead of pytrends
+    _last_trends_call = time.time()
+    score = fetch_trends_csv(keyword)
     
-    # If all retries failed but we have cached data, use it
-    if conn and cached_value is not None:
-        return cached_value
+    # Cache the successful result
+    if conn:
+        save_metric_value(keyword, 'trends', score, conn)
         
-    # No data available, return 0
-    return 0.0
+    return score
 
 # Wikipedia pageviews
 def fetch_wiki_pageviews(page_title: str) -> float:

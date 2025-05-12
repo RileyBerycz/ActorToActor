@@ -243,14 +243,21 @@ function ActorGame({ settings, onReset }) {
     const newHint = generateHint();
     setHint(newHint);
     
-    if (hintTimer) clearTimeout(hintTimer);
+    if (hintTimer) {
+      clearTimeout(hintTimer);
+    }
+    
     setHintAvailable(false);
     
+    // Store the timer ID properly
     const timer = setTimeout(() => {
       setHintAvailable(true);
-    }, 120000);
+    }, 120000); // 2 minutes
     
     setHintTimer(timer);
+    
+    // Prevent any potential loop by ensuring hint isn't reset immediately
+    return () => clearTimeout(timer);
   }, [generateHint, hintTimer]);
   
   const handleSelection = useCallback((selection) => {
