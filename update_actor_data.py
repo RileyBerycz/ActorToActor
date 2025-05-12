@@ -517,8 +517,8 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         wiki_pageviews * 0.10 +                 # Wikipedia popularity (10%)
         wiki_importance * 0.10 +                # Wikipedia importance (10%)
         social_score * 0.10 +                   # Social media presence (10%)
-        credits_factor * 5 +                    # Quantity of work (5%)
-        longevity_factor * 5                    # Career longevity (5%)
+        credits_factor * 0.05 +                 # Quantity of work (5%)
+        longevity_factor * 0.05                 # Career longevity (5%)
     )
     
     return enhanced_score
