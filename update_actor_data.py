@@ -493,6 +493,8 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         longevity_factor * 0.05                 # Career longevity (5%)
     )
     
+    print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}, Social={social_score:.2f}")
+    
     return enhanced_score
 
 # =============================================================================
