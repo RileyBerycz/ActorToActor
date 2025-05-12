@@ -1100,6 +1100,7 @@ def get_wikidata_metrics(actor_name):
 
 # Cache for API responses to avoid duplicate requests
 _popularity_cache = {
+    'search_interest': {},  
     'wiki_pageviews': {},
     'wiki_metrics': {},
     'wikidata': {},
