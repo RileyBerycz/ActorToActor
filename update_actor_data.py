@@ -910,7 +910,11 @@ def fetch_wiki_pageviews(page_title: str) -> float:
     if not page_title:
         return 0.0
     try:
-        # You already have the correct imports at the top, just use timedelta directly
+        # Add proper User-Agent header
+        headers = {
+            "User-Agent": "ActorToActor/1.0 (https://github.com/yourusername/ActorToActor; contact@example.com)"
+        }
+        
         end = datetime.now(timezone.utc).date() - timedelta(days=1)
         start = end - timedelta(days=89)
         url = (
@@ -918,7 +922,10 @@ def fetch_wiki_pageviews(page_title: str) -> float:
             f"en.wikipedia/all-access/user/{requests.utils.quote(page_title)}/daily/"
             f"{start.strftime('%Y%m%d')}/{end.strftime('%Y%m%d')}"
         )
-        r = requests.get(url, timeout=5)
+        
+        # Use rate-limited request
+        r = make_wiki_request(url, {}, headers)
+        
         if r.status_code != 200:
             return 0.0
         data = r.json().get("items", [])
@@ -935,23 +942,38 @@ def fetch_awards_score(actor_name: str) -> float:
     if not actor_name:
         return 0.0
     try:
+        # Add proper User-Agent header
+        headers = {
+            "User-Agent": "ActorToActor/1.0 (https://github.com/yourusername/ActorToActor; contact@example.com)"
+        }
+        
         # Resolve actor page via search API
-        s = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "list": "search",
-                "srsearch": actor_name,
-                "format": "json",
-            },
-            timeout=5
-        ).json()
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": actor_name,
+            "format": "json"
+        }
+        
+        # Use rate-limited request
+        search_response = make_wiki_request(search_url, search_params, headers)
+        s = search_response.json()
+        
         if not s["query"]["search"]:
             return 0.0
+            
         title = s["query"]["search"][0]["title"]
+        
         # Fetch page HTML
-        html = requests.get(f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}", timeout=5).text
+        page_url = f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}"
+        
+        # Use rate-limited request for HTML
+        page_response = make_wiki_request(page_url, {}, headers)
+        html = page_response.text
+        
         soup = BeautifulSoup(html, "html.parser")
+        
         # Look for an infobox row containing awards
         infobox = soup.find("table", {"class": "infobox"})
         wins = noms = 0
@@ -976,6 +998,11 @@ def get_wiki_metrics(actor_name):
         return {"pageviews": 0, "revisions": 0, "links": 0}
     
     try:
+        # Add proper User-Agent header
+        headers = {
+            "User-Agent": "ActorToActor/1.0 (https://github.com/yourusername/ActorToActor; contact@example.com)"
+        }
+        
         # First find the correct Wikipedia page
         search_url = "https://en.wikipedia.org/w/api.php"
         search_params = {
@@ -985,12 +1012,14 @@ def get_wiki_metrics(actor_name):
             "format": "json"
         }
         
-        search_response = requests.get(search_url, params=search_params, timeout=5)
-        search_data = search_response.json()
-        
-        if not search_data.get('query', {}).get('search'):
+        # Use rate-limited request
+        search_response = make_wiki_request(search_url, search_params, headers)
+        if search_response.status_code != 200:
+            print(f"Wikipedia API error {search_response.status_code} for '{actor_name}'")
             return {"pageviews": 0, "revisions": 0, "links": 0}
             
+        search_data = search_response.json()
+        
         # Get the page title from search results
         page_title = search_data['query']['search'][0]['title']
         
@@ -1006,7 +1035,8 @@ def get_wiki_metrics(actor_name):
             "format": "json"
         }
         
-        info_response = requests.get(search_url, params=info_params, timeout=5)
+        # Use rate-limited request
+        info_response = make_wiki_request(search_url, info_params, headers)
         info_data = info_response.json()
         
         # Process response
@@ -1027,7 +1057,8 @@ def get_wiki_metrics(actor_name):
             "format": "json"
         }
         
-        revisions_response = requests.get(search_url, params=revisions_params, timeout=5)
+        # Use rate-limited request
+        revisions_response = make_wiki_request(search_url, revisions_params, headers)
         revisions_data = revisions_response.json()
         rev_pages = revisions_data.get('query', {}).get('pages', {})
         
@@ -1055,7 +1086,12 @@ def get_wiki_metrics(actor_name):
 def get_social_media_followers_from_wikipedia(actor_name):
     """Scrape social media follower counts from Wikipedia"""
     try:
-        # Search for the actor's Wikipedia page
+        # Add proper User-Agent header
+        headers = {
+            "User-Agent": "ActorToActor/1.0 (https://github.com/yourusername/ActorToActor; contact@example.com)"
+        }
+        
+        # Search for the actor's page with proper headers
         search_url = "https://en.wikipedia.org/w/api.php"
         search_params = {
             "action": "query",
@@ -1063,16 +1099,24 @@ def get_social_media_followers_from_wikipedia(actor_name):
             "srsearch": actor_name,
             "format": "json"
         }
-        search_response = requests.get(search_url, params=search_params, timeout=10).json()
-        if not search_response["query"]["search"]:
+        
+        # Use rate-limited request
+        search_response = make_wiki_request(search_url, search_params, headers)
+        search_data = search_response.json()
+        
+        if not search_data["query"]["search"]:
             return {}
 
         # Get the title of the first search result
-        title = search_response["query"]["search"][0]["title"]
+        title = search_data["query"]["search"][0]["title"]
 
         # Fetch the Wikipedia page HTML
         page_url = f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}"
-        page_html = requests.get(page_url, timeout=10).text
+        
+        # Use rate-limited request for HTML
+        page_response = make_wiki_request(page_url, {}, headers)
+        page_html = page_response.text
+        
         soup = BeautifulSoup(page_html, "html.parser")
 
         # Look for social media follower counts in the infobox
@@ -1108,6 +1152,24 @@ def get_wikidata_metrics(actor_name):
     statements_count = len(entity_data['entities'][wikidata_id].get('claims', {}))
     
     return min(statements_count / 50, 1.0)  # Normalize
+
+# Initialize Wikipedia API rate limiting tracking
+_last_wiki_call = 0
+
+def make_wiki_request(url, params, headers):
+    """Make Wikipedia API request with rate limiting"""
+    global _last_wiki_call
+    
+    # Enforce 1-second delay between Wikipedia API calls
+    now = time.time()
+    if _last_wiki_call > 0:
+        time_since_last = now - _last_wiki_call
+        if time_since_last < 1.0:
+            sleep_time = 1.0 - time_since_last
+            time.sleep(sleep_time)
+    
+    _last_wiki_call = time.time()
+    return requests.get(url, params=params, headers=headers, timeout=10)
 
 # Cache for API responses to avoid duplicate requests
 _popularity_cache = {
