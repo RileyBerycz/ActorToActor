@@ -346,13 +346,6 @@ def calculate_credit_popularity(movie_credits, tv_credits):
     """
     Calculate average popularity of an actor's credits with enhanced metrics
     including quality metrics based on TMDB ratings
-    
-    Args:
-        movie_credits: List of movie credits
-        tv_credits: List of TV credits
-        
-    Returns:
-        Float representing enhanced average popularity
     """
     all_popularity_scores = []
     quality_scores = []  # Track quality scores separately
@@ -365,22 +358,10 @@ def calculate_credit_popularity(movie_credits, tv_credits):
             continue
             
         movie_id = movie["id"]
-        title = movie.get("title", "")
         
-        # Get cached search interest or fetch new data
-        search_score = 0
-        if title:
-            if title in _popularity_cache['search_interest']:
-                search_score = _popularity_cache['search_interest'][title]
-            else:
-                # Limit external API calls to avoid rate limiting
-                if len(_popularity_cache['search_interest']) < 100:
-                    search_score = fetch_search_interest(title) * 100
-                    _popularity_cache['search_interest'][title] = search_score
-        
-        # Calculate enhanced popularity score
-        enhanced_pop = base_pop * 0.8 + search_score * 0.2
-        all_popularity_scores.append(enhanced_pop)
+        # REMOVED: Google Trends search interest code
+        # Just use the TMDB popularity directly
+        all_popularity_scores.append(base_pop)
         
         # Quality metrics - Get movie details for rating data
         # Cache movie quality data to avoid duplicate API calls
@@ -415,21 +396,12 @@ def calculate_credit_popularity(movie_credits, tv_credits):
         base_pop = tv.get("popularity", 0)
         if base_pop <= 0:
             continue
-            
-        tv_id = tv.get("id", 0)
-        name = tv.get("name", "")
-        search_score = 0
-        if name:
-            if name in _popularity_cache['search_interest']:
-                search_score = _popularity_cache['search_interest'][name]
-            else:
-                if len(_popularity_cache['search_interest']) < 100:
-                    search_score = fetch_search_interest(name) * 100
-                    _popularity_cache['search_interest'][name] = search_score
         
-        # Calculate enhanced popularity score
-        enhanced_pop = base_pop * 0.8 + search_score * 0.2
-        all_popularity_scores.append(enhanced_pop)
+        tv_id = tv.get("id", 0)
+        
+        # REMOVED: Google Trends search interest code
+        # Just use TMDB popularity directly
+        all_popularity_scores.append(base_pop)
         
         # Quality metrics for TV shows
         quality_key = f"quality_tv_{tv_id}"
