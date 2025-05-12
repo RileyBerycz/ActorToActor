@@ -473,7 +473,7 @@ def calculate_credit_popularity(movie_credits, tv_credits):
     # Combine popularity and quality (70/30 split)
     return (popularity_avg * 0.7) + (quality_avg * 100 * 0.3)
 
-def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name=""):
+def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name="", actor_id=None):
     """
     Calculate enhanced popularity score using multiple data sources
     
@@ -483,6 +483,7 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         years_active: Years active in industry
         avg_credit_popularity: Average popularity of credits
         actor_name: Name of the actor for external data lookup
+        actor_id: Actor's TMDB ID for additional metrics
     
     Returns:
         Float representing enhanced balanced popularity score
@@ -491,40 +492,33 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
     longevity_factor = min(years_active / 15, 1.0)  # Cap at 15 years
     credits_factor = min(num_credits / 25, 1.0)     # Cap at 25 credits
     
-    # Get external data if actor name is provided
+    # Initialize external metrics
     wiki_pageviews = 0
+    wiki_importance = 0
+    wikidata_score = 0
     awards_score = 0
-    search_interest = 0
+    social_score = 0
     
     if actor_name:
-        # Get cached values or fetch new data
-        if actor_name in _popularity_cache['wiki_pageviews']:
-            wiki_pageviews = _popularity_cache['wiki_pageviews'][actor_name] 
-        else:
-            wiki_pageviews = fetch_wiki_pageviews(actor_name) * 100
-            _popularity_cache['wiki_pageviews'][actor_name] = wiki_pageviews
-            
-        if actor_name in _popularity_cache['awards']:
-            awards_score = _popularity_cache['awards'][actor_name]
-        else:
-            awards_score = fetch_awards_score(actor_name) * 100
-            _popularity_cache['awards'][actor_name] = awards_score
-            
-        if actor_name in _popularity_cache['search_interest']:
-            search_interest = _popularity_cache['search_interest'][actor_name]
-        else:
-            search_interest = fetch_search_interest(actor_name) * 100
-            _popularity_cache['search_interest'][actor_name] = search_interest
+        # Get Wikipedia metrics
+        wiki_metrics = get_wiki_metrics(actor_name)
+        wiki_pageviews = wiki_metrics['pageviews']
+        wiki_importance = (wiki_metrics.get('revisions', 0) * 0.6) + (wiki_metrics.get('links', 0) * 0.4)
+        
+        # Get social media followers
+        followers = get_social_media_followers_from_wikipedia(actor_name)
+        normalized_followers = normalize_followers(followers)
+        social_score = sum(normalized_followers.values()) / len(normalized_followers) if normalized_followers else 0
     
-    # Enhanced scoring formula with multiple data sources
+    # Enhanced scoring formula with new data sources
     enhanced_score = (
         tmdb_popularity * 0.25 +                # TMDB popularity (25%)
         avg_credit_popularity * 0.25 +          # Quality of work (25%) 
         wiki_pageviews * 0.10 +                 # Wikipedia popularity (10%)
-        search_interest * 0.10 +                # Search interest (10%)
-        awards_score * 0.10 +                   # Awards recognition (10%)
-        credits_factor * 10 +                   # Quantity of work (10%)
-        longevity_factor * 10                   # Career longevity (10%)
+        wiki_importance * 0.10 +                # Wikipedia importance (10%)
+        social_score * 0.10 +                   # Social media presence (10%)
+        credits_factor * 5 +                    # Quantity of work (5%)
+        longevity_factor * 5                    # Career longevity (5%)
     )
     
     return enhanced_score
@@ -665,6 +659,13 @@ def normalize_image_path(path):
     if not path:
         return ""
     return path if path.startswith('/') else f"/{path}"
+
+# Normalize follower counts to a 0–1 scale
+def normalize_followers(followers):
+    """Normalize follower counts to a 0–1 scale"""
+    max_followers = 1_000_000_000  # Assume 1 billion as the upper limit
+    normalized = {platform: min(count / max_followers, 1.0) for platform, count in followers.items()}
+    return normalized
 
 # =============================================================================
 # CHECKPOINT MANAGEMENT
@@ -833,15 +834,7 @@ def save_metric_value(keyword, metric_type, value, conn):
 
 # Google Trends - Search interest
 def fetch_trends_csv(keyword: str) -> float:
-    """
-    Get Google Trends data directly via their CSV API
-    
-    Args:
-        keyword: Search term to look up
-        
-    Returns:
-        Float representing normalized search volume (0-1)
-    """
+    """Get Google Trends data directly via their CSV API"""
     if not keyword:
         return 0.0
         
@@ -860,9 +853,15 @@ def fetch_trends_csv(keyword: str) -> float:
         )
         
         # The first line is garbage, skip it
+        if not response.text or "\n" not in response.text:
+            return 0.0
+        
         content = response.text.split('\n', 1)[1]
-        data = json.loads(content)
-        token = data["widgets"][0]["token"]
+        try:
+            data = json.loads(content)
+            token = data["widgets"][0]["token"]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return 0.0
         
         # Step 2: Fetch CSV
         csv_url = (
@@ -871,28 +870,31 @@ def fetch_trends_csv(keyword: str) -> float:
         )
         csv_response = requests.get(csv_url, timeout=10)
         
-        # Parse CSV content
+        # Parse CSV content safely
         lines = csv_response.text.strip().split("\n")
-        if len(lines) <= 2:  # Header + one data point minimum
+        if len(lines) <= 2:
             return 0.0
-            
-        # Skip first line which is garbage, second line is header
+        
+        # Check if we have enough data
         values = []
-        for line in lines[2:]:
-            parts = line.split(",")
-            if len(parts) >= 2:
-                try:
-                    value = float(parts[1])
-                    values.append(value)
-                except ValueError:
-                    pass
+        try:
+            for line in lines[2:]:
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    try:
+                        value = float(parts[1])
+                        values.append(value)
+                    except ValueError:
+                        pass
+        except Exception:
+            return 0.0
         
         # Calculate average and normalize
         if not values:
             return 0.0
             
         avg_value = sum(values) / len(values)
-        return avg_value / 100.0  # Google Trends values are 0-100, normalize to 0-1
+        return avg_value / 100.0
         
     except Exception as e:
         print(f"Google Trends CSV error for '{keyword}': {e}")
@@ -996,15 +998,132 @@ def fetch_awards_score(actor_name: str) -> float:
         print(f"Wikipedia awards error for '{actor_name}': {e}")
         return 0.0
 
+def get_wiki_metrics(actor_name):
+    """Get Wikipedia metrics for an actor (pageviews, revisions, links)"""
+    if not actor_name:
+        return {"pageviews": 0, "revisions": 0, "links": 0}
+    
+    try:
+        # First find the correct Wikipedia page
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": actor_name,
+            "format": "json"
+        }
+        
+        search_response = requests.get(search_url, params=search_params, timeout=5)
+        search_data = search_response.json()
+        
+        if not search_data.get('query', {}).get('search'):
+            return {"pageviews": 0, "revisions": 0, "links": 0}
+            
+        # Get the page title from search results
+        page_title = search_data['query']['search'][0]['title']
+        
+        # Get pageviews
+        pageviews = fetch_wiki_pageviews(page_title)
+        
+        # Get page info including revisions and links
+        info_params = {
+            "action": "query",
+            "prop": "info|links",
+            "titles": page_title,
+            "inprop": "protection|talkid|watched|watchers|visitingwatchers|notificationtimestamp|subjectid|url|readable|preload|displaytitle|varianttitles",
+            "format": "json"
+        }
+        
+        info_response = requests.get(search_url, params=info_params, timeout=5)
+        info_data = info_response.json()
+        
+        # Process response
+        pages = info_data.get('query', {}).get('pages', {})
+        if not pages:
+            return {"pageviews": pageviews, "revisions": 0, "links": 0}
+            
+        # Get first page (should be the only one)
+        page_id = list(pages.keys())[0]
+        page_info = pages[page_id]
+        
+        # Count revisions
+        revisions_params = {
+            "action": "query",
+            "prop": "revisions",
+            "titles": page_title,
+            "rvlimit": "500",  # Maximum allowed without bot permissions
+            "format": "json"
+        }
+        
+        revisions_response = requests.get(search_url, params=revisions_params, timeout=5)
+        revisions_data = revisions_response.json()
+        rev_pages = revisions_data.get('query', {}).get('pages', {})
+        
+        if rev_pages and page_id in rev_pages:
+            revisions_count = len(rev_pages[page_id].get('revisions', []))
+        else:
+            revisions_count = 0
+            
+        # Count links
+        links_count = len(page_info.get('links', []))
+        
+        # Normalize values
+        normalized_revisions = min(revisions_count / 300, 1.0)  # Normalize against 300 revisions
+        normalized_links = min(links_count / 200, 1.0)  # Normalize against 200 links
+        
+        return {
+            "pageviews": pageviews,
+            "revisions": normalized_revisions,
+            "links": normalized_links
+        }
+        
+    except Exception as e:
+        print(f"Error getting Wikipedia metrics for {actor_name}: {e}")
+        return {"pageviews": 0, "revisions": 0, "links": 0}
+
+def get_wikidata_metrics(actor_name):
+    """Get actor metrics from Wikidata"""
+    # Get Wikidata ID from name
+    url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={requests.utils.quote(actor_name)}&language=en&format=json"
+    data = requests.get(url).json()
+    if not data.get('search'):
+        return 0.0
+        
+    wikidata_id = data['search'][0]['id']
+    
+    # Get statements count (more statements = more notable)
+    url = f"https://www.wikidata.org/wiki/Special:EntityData/{wikidata_id}.json"
+    entity_data = requests.get(url).json()
+    statements_count = len(entity_data['entities'][wikidata_id].get('claims', {}))
+    
+    return min(statements_count / 50, 1.0)  # Normalize
+
 # Cache for API responses to avoid duplicate requests
 _popularity_cache = {
-    'search_interest': {},
     'wiki_pageviews': {},
-    'awards': {}
+    'wiki_metrics': {},
+    'wikidata': {},
+    'awards': {},
+    'social': {}
 }
 
-# Initialize Trends API rate limiting tracking
-_last_trends_call = 0
+# =============================================================================
+# NEWS MENTIONS - GDELT
+# =============================================================================
+def get_gdelt_news_mentions(actor_name):
+    """Get frequency of news mentions from GDELT Project"""
+    # Format: YYYY-MM-DD
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    
+    url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={requests.utils.quote(actor_name)}&mode=artlist&format=json&startdatetime={start_date}&enddatetime={end_date}"
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        articles_count = len(data.get('articles', []))
+        return min(articles_count / 200, 1.0)  # Normalize
+    except:
+        return 0.0
 
 # =============================================================================
 # MAIN DATA COLLECTION LOOP
@@ -1203,7 +1322,8 @@ for page in range(start_page, TOTAL_PAGES + 1):
             num_credits,
             years_active,
             avg_credit_popularity,
-            actor_name  # Pass actor name for external data lookup
+            actor_name,
+            actor_id  # Add actor ID parameter
         )
         
         print(f"  TMDB Popularity: {tmdb_popularity:.2f}, Custom Popularity: {custom_popularity:.2f}")
@@ -1344,3 +1464,44 @@ All data successfully updated:
 - Filtering out self-appearances in both movies and TV shows
 - Including credits with popularity >= 1.0
 """)
+
+def get_social_media_followers_from_wikipedia(actor_name):
+    """Scrape social media follower counts from Wikipedia"""
+    try:
+        # Search for the actor's Wikipedia page
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": actor_name,
+            "format": "json"
+        }
+        search_response = requests.get(search_url, params=search_params, timeout=10).json()
+        if not search_response["query"]["search"]:
+            return {}
+
+        # Get the title of the first search result
+        title = search_response["query"]["search"][0]["title"]
+
+        # Fetch the Wikipedia page HTML
+        page_url = f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}"
+        page_html = requests.get(page_url, timeout=10).text
+        soup = BeautifulSoup(page_html, "html.parser")
+
+        # Look for social media follower counts in the infobox
+        infobox = soup.find("table", {"class": "infobox"})
+        followers = {}
+        if infobox:
+            for row in infobox.find_all("tr"):
+                header = row.find("th")
+                if header and "followers" in header.text.lower():
+                    text = row.get_text(" ", strip=True)
+                    # Extract follower counts for each platform
+                    for platform in ["Twitter", "Instagram", "Facebook", "TikTok"]:
+                        match = re.search(rf"{platform}.*?([\d,]+)", text, re.I)
+                        if match:
+                            followers[platform.lower()] = int(match.group(1).replace(",", ""))
+        return normalize_followers(followers)
+    except Exception as e:
+        print(f"Error fetching social media followers for '{actor_name}': {e}")
+        return {}
