@@ -142,8 +142,7 @@ def load_actor_data(region):
     return actors
 
 def build_actor_graph(actors, include_tv=True):
-    """Build a NetworkX graph of actor connections through movies/TV shows,
-    filtering TV credits that likely don't represent scripted acting roles."""
+    """Build NetworkX graph with stronger documentary/self-appearance filtering"""
     print("Building actor connection graph...")
     G = nx.Graph()
     
@@ -162,35 +161,45 @@ def build_actor_graph(actors, include_tv=True):
     for actor_id, actor in tqdm(actors.items(), desc="Processing movie credits"):
         for credit in actor.get('movie_credits', []):
             character = (credit.get('character') or "").strip().lower()
-            # Skip if the actor is simply playing himself/herself
-            if character in ['self', 'himself', 'herself']:
+            # Stricter filtering for actors playing themselves
+            if character in ['self', 'himself', 'herself'] or actor['name'].lower() in character.lower():
                 continue
             # Skip documentaries and similar non-fiction formats
             movie_title = credit.get('title', '').lower()
             if any(keyword in movie_title for keyword in ['documentary', 'behind the scenes']):
                 continue
             movie_id = credit['id']
-            credit_to_actors.setdefault(movie_id, []).append(actor_id)
+            credit_to_actors.setdefault(movie_id, []).append((actor_id, character))
     
-    # Process TV credits with filtering heuristics.
+    # Process TV credits with much stronger filtering
     if include_tv:
-        excluded_keywords = ['talk', 'game', 'reality', 'news', 'award', 'interview', 'host', 'special', 'ceremony', 'documentary']
+        excluded_keywords = ['talk', 'game', 'reality', 'news', 'award', 'interview', 
+                            'host', 'special', 'ceremony', 'documentary', 'behind', 'making of']
+        excluded_titles = ['basquiat', 'biography', 'portrait', 'story of']  # Known problematic titles
+        
         for actor_id, actor in tqdm(actors.items(), desc="Processing TV credits"):
             for credit in actor.get('tv_credits', []):
                 tv_title = credit.get('title', '').lower()
                 character = (credit.get('character') or "").strip().lower()
-                # Skip if the actor is simply playing himself/herself.
-                if character in ['self', 'himself', 'herself']:
-                    continue
-                # Skip if the TV title contains keywords suggesting a non-scripted format.
+                
+                # Skip ANY title containing known documentary keywords
                 if any(keyword in tv_title for keyword in excluded_keywords):
                     continue
-                # Check if character name matches actor's real name
-                actor_name_parts = actor['name'].lower().split()
-                if character and any(part in character.lower() for part in actor_name_parts if len(part) > 2):
+                    
+                # Skip known problematic titles
+                if any(title in tv_title for title in excluded_titles):
                     continue
+                
+                # Much stricter self-appearance check
+                if character in ['self', 'himself', 'herself', 'themselves'] or 'self' in character:
+                    continue
+                
+                # Skip if character contains "interview" or similar words
+                if any(word in character for word in ['interview', 'host', 'narrator', 'voice']):
+                    continue
+                
                 show_id = credit['id']
-                credit_to_actors.setdefault(show_id, []).append(actor_id)
+                credit_to_actors.setdefault(show_id, []).append((actor_id, character))
     
     # Now create edges between any two actors who share a credit.
     edge_count = 0
@@ -199,7 +208,13 @@ def build_actor_graph(actors, include_tv=True):
             continue
         for i in range(len(actor_list)):
             for j in range(i+1, len(actor_list)):
-                actor1, actor2 = actor_list[i], actor_list[j]
+                actor1, char1 = actor_list[i]
+                actor2, char2 = actor_list[j]
+                
+                # Skip if they're both playing themselves
+                if "self" in char1 and "self" in char2:
+                    continue
+                    
                 if G.has_edge(actor1, actor2):
                     G[actor1][actor2]['weight'] += 1
                     G[actor1][actor2]['credits'].append(credit_id)

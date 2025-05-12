@@ -1127,6 +1127,7 @@ class ActorToActorApp:
         return False
     def _find_shortest_path(self, start_id, target_id, include_tv=True, exclude_mcu=False, max_depth=6):
         """Find the shortest path between two actors with filters"""
+
         try:
             # First check if there's a pre-computed path in actor_connections
             if 'actor_connections' in self.db_connections:
@@ -1142,23 +1143,45 @@ class ActorToActorApp:
                     conn.close()
                     
                     if result:
-                        # We found a pre-computed path, decompress and use it
-                        print("Using pre-computed path from actor_connections.db")
+                        # Pre-computed path needs validation
                         import gzip
                         import json
                         path_data = gzip.decompress(result[0]).decode('utf-8')
                         path_items = json.loads(path_data)
                         
-                        # Extract just the actor IDs from the path
-                        actor_path = [int(item['i']) for item in path_items if item['t'] == 'a']
+                        # Extract actor IDs and movie IDs for validation
+                        actor_path = []
+                        movie_ids = []
                         
-                        # Clean up loading indicator and display path
-                        self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
-                        self.root.after(0, lambda: self._display_path(actor_path))
-                        return
+                        for i, item in enumerate(path_items):
+                            if item['t'] == 'a':  # Actor
+                                actor_path.append(int(item['i']))
+                            elif item['t'] == 'm':  # Movie or TV show
+                                movie_ids.append(item['i'])
+                        
+                        # Verify each movie actually exists and connects the actors
+                        all_valid = True
+                        for i in range(len(movie_ids)):
+                            movie_id = movie_ids[i]
+                            actor1 = actor_path[i]
+                            actor2 = actor_path[i+1]
+                            
+                            # Check if this movie connects these actors
+                            if not self._verify_movie_connects_actors(movie_id, actor1, actor2, check_media_type=True):
+                                print(f"Invalid connection: Movie/Show {movie_id} doesn't connect actors")
+                                all_valid = False
+                                break
+                        
+                        if all_valid:
+                            # Clean up loading indicator and display path
+                            self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
+                            self.root.after(0, lambda: self._display_path(actor_path))
+                            return
+                        # If not valid, fall through to regular path finding
+                        print("Pre-computed path failed validation, trying regular path finding")
                 except Exception as e:
                     print(f"Error checking pre-computed path: {str(e)}")
-            
+
             # Create a filtered copy of the graph based on the search settings
             filtered_graph = self.graph.copy()
             
@@ -1208,7 +1231,9 @@ class ActorToActorApp:
         except nx.NetworkXNoPath:
             # Clean up loading indicator
             self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
-            self.root.after(0, lambda: self.status_var.set("No path found between these actors"))
+            
+            # Create "No Connection" display
+            self.root.after(0, lambda: self._display_no_connection(start_id, target_id))
         except Exception as e:
             # Clean up loading indicator
             self.root.after(0, lambda: self.loading_widgets.destroy() if hasattr(self, 'loading_widgets') else None)
@@ -1695,6 +1720,85 @@ class ActorToActorApp:
             tree.selection_set(tree.get_children()[0])
             tree.focus(tree.get_children()[0])
 
+    def _display_no_connection(self, actor1_id, actor2_id):
+        """Display a message when no connection can be found between actors"""
+        self.results_text.delete("1.0", tk.END)
+        self.results_text.insert("1.0", "CONNECTION IMPOSSIBLE\n\nNo valid path exists between these actors.")
+        
+        # Get actor names for display
+        actor1_name = self.graph.nodes[actor1_id]['name'] if actor1_id in self.graph else f"Actor {actor1_id}"
+        actor2_name = self.graph.nodes[actor2_id]['name'] if actor2_id in self.graph else f"Actor {actor2_id}"
+        
+        # Clear previous visual path
+        for widget in self.path_frame.winfo_children():
+            widget.destroy()
+            
+        # Show the actors with a broken connection symbol between
+        frame1 = ttk.Frame(self.path_frame, borderwidth=2, relief=tk.GROOVE)
+        frame1.pack(side=tk.LEFT, padx=10, pady=10)
+        ttk.Label(frame1, text=actor1_name, font=("TkDefaultFont", 10, "bold")).pack(padx=5, pady=5)
+        
+        broken_frame = ttk.Frame(self.path_frame)
+        broken_frame.pack(side=tk.LEFT)
+        ttk.Label(broken_frame, text="⚡", font=("TkDefaultFont", 24)).pack(side=tk.TOP)
+        ttk.Label(broken_frame, text="No Connection", font=("TkDefaultFont", 8)).pack(side=tk.TOP)
+        
+        frame2 = ttk.Frame(self.path_frame, borderwidth=2, relief=tk.GROOVE)
+        frame2.pack(side=tk.LEFT, padx=10, pady=10)
+        ttk.Label(frame2, text=actor2_name, font=("TkDefaultFont", 10, "bold")).pack(padx=5, pady=5)
+        
+        self.status_var.set(f"No valid connection found between {actor1_name} and {actor2_name}")
+
+    def _verify_movie_connects_actors(self, movie_id, actor1_id, actor2_id, check_media_type=False):
+        """Verify that a movie/TV show actually connects two actors"""
+        try:
+            if 'actors' not in self.db_connections:
+                return False  # Can't verify without database
+                
+            conn = sqlite3.connect(self.db_connections['actors']['path'])
+            cursor = conn.cursor()
+            
+            # First check if both actors appear in this as a movie
+            cursor.execute("""
+                SELECT COUNT(*) FROM movie_credits 
+                WHERE id = ? AND actor_id = ?
+            """, (movie_id, actor1_id))
+            actor1_in_movie = cursor.fetchone()[0] > 0
+            
+            if actor1_in_movie:
+                # If actor1 is in movie, actor2 must also be in movie (not TV)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM movie_credits 
+                    WHERE id = ? AND actor_id = ?
+                """, (movie_id, actor2_id))
+                movie_result = cursor.fetchone()[0] > 0
+                conn.close()
+                return movie_result
+            
+            # Try TV shows if movie check failed
+            cursor.execute("""
+                SELECT COUNT(*) FROM tv_credits 
+                WHERE id = ? AND actor_id = ?
+            """, (movie_id, actor1_id))
+            actor1_in_tv = cursor.fetchone()[0] > 0
+            
+            if actor1_in_tv:
+                # If actor1 is in TV show, actor2 must also be in same show
+                cursor.execute("""
+                    SELECT COUNT(*) FROM tv_credits 
+                    WHERE id = ? AND actor_id = ?
+                """, (movie_id, actor2_id))
+                tv_result = cursor.fetchone()[0] > 0
+                conn.close()
+                return tv_result if not check_media_type else False
+                
+            conn.close()
+            return False
+            
+        except Exception as e:
+            print(f"Error verifying connection: {str(e)}")
+            return False  # On error, don't trust the connection
+        
 if __name__ == "__main__":
     root = tk.Tk()
     app = ActorToActorApp(root)
