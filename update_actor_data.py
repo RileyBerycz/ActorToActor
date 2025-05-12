@@ -1003,6 +1003,9 @@ _popularity_cache = {
     'awards': {}
 }
 
+# Initialize Trends API rate limiting tracking
+_last_trends_call = 0
+
 # =============================================================================
 # MAIN DATA COLLECTION LOOP
 # =============================================================================
