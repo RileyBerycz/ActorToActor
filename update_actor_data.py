@@ -649,6 +649,20 @@ def load_checkpoint():
     Returns:
         Dictionary with checkpoint data
     """
+    # Check if we're doing a force clean - in that case, always start fresh
+    force_clean = os.environ.get("FORCE_CLEAN_DB", "false").lower() == "true"
+    
+    if force_clean and os.path.exists(CHECKPOINT_FILE):
+        print("Forced clean database requested. Removing existing checkpoint.")
+        os.remove(CHECKPOINT_FILE)
+        return {
+            "last_page": 0,
+            "processed_actors": [],
+            "last_update": None,
+            "completed": False
+        }
+    
+    # Rest of the function remains the same
     if not os.path.exists(CHECKPOINT_FILE):
         print("No checkpoint file found, starting fresh")
         return {
