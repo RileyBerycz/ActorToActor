@@ -1052,7 +1052,46 @@ def get_wiki_metrics(actor_name):
     except Exception as e:
         print(f"Error getting Wikipedia metrics for {actor_name}: {e}")
         return {"pageviews": 0, "revisions": 0, "links": 0}
+def get_social_media_followers_from_wikipedia(actor_name):
+    """Scrape social media follower counts from Wikipedia"""
+    try:
+        # Search for the actor's Wikipedia page
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": actor_name,
+            "format": "json"
+        }
+        search_response = requests.get(search_url, params=search_params, timeout=10).json()
+        if not search_response["query"]["search"]:
+            return {}
 
+        # Get the title of the first search result
+        title = search_response["query"]["search"][0]["title"]
+
+        # Fetch the Wikipedia page HTML
+        page_url = f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}"
+        page_html = requests.get(page_url, timeout=10).text
+        soup = BeautifulSoup(page_html, "html.parser")
+
+        # Look for social media follower counts in the infobox
+        infobox = soup.find("table", {"class": "infobox"})
+        followers = {}
+        if infobox:
+            for row in infobox.find_all("tr"):
+                header = row.find("th")
+                if header and "followers" in header.text.lower():
+                    text = row.get_text(" ", strip=True)
+                    # Extract follower counts for each platform
+                    for platform in ["Twitter", "Instagram", "Facebook", "TikTok"]:
+                        match = re.search(rf"{platform}.*?([\d,]+)", text, re.I)
+                        if match:
+                            followers[platform.lower()] = int(match.group(1).replace(",", ""))
+        return followers
+    except Exception as e:
+        print(f"Error fetching social media followers for '{actor_name}': {e}")
+        return {}
 def get_wikidata_metrics(actor_name):
     """Get actor metrics from Wikidata"""
     # Get Wikidata ID from name
@@ -1437,44 +1476,3 @@ All data successfully updated:
 - Filtering out self-appearances in both movies and TV shows
 - Including credits with popularity >= 1.0
 """)
-
-def get_social_media_followers_from_wikipedia(actor_name):
-    """Scrape social media follower counts from Wikipedia"""
-    try:
-        # Search for the actor's Wikipedia page
-        search_url = "https://en.wikipedia.org/w/api.php"
-        search_params = {
-            "action": "query",
-            "list": "search",
-            "srsearch": actor_name,
-            "format": "json"
-        }
-        search_response = requests.get(search_url, params=search_params, timeout=10).json()
-        if not search_response["query"]["search"]:
-            return {}
-
-        # Get the title of the first search result
-        title = search_response["query"]["search"][0]["title"]
-
-        # Fetch the Wikipedia page HTML
-        page_url = f"https://en.wikipedia.org/wiki/{requests.utils.quote(title)}"
-        page_html = requests.get(page_url, timeout=10).text
-        soup = BeautifulSoup(page_html, "html.parser")
-
-        # Look for social media follower counts in the infobox
-        infobox = soup.find("table", {"class": "infobox"})
-        followers = {}
-        if infobox:
-            for row in infobox.find_all("tr"):
-                header = row.find("th")
-                if header and "followers" in header.text.lower():
-                    text = row.get_text(" ", strip=True)
-                    # Extract follower counts for each platform
-                    for platform in ["Twitter", "Instagram", "Facebook", "TikTok"]:
-                        match = re.search(rf"{platform}.*?([\d,]+)", text, re.I)
-                        if match:
-                            followers[platform.lower()] = int(match.group(1).replace(",", ""))
-        return followers
-    except Exception as e:
-        print(f"Error fetching social media followers for '{actor_name}': {e}")
-        return {}
