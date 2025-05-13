@@ -443,7 +443,7 @@ def calculate_credit_popularity(movie_credits, tv_credits):
         quality_avg = sum(top_scores) / len(top_scores)
     
     # Combine popularity and quality (70/30 split)
-    return (popularity_avg * 0.7) + (quality_avg * 100 * 0.3)
+    return (popularity_avg * 0.7) + (quality_avg * 0.3)
 
 def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name="", actor_id=None):
     """
@@ -484,13 +484,13 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
     
     # Enhanced scoring formula with normalized TMDB value
     enhanced_score = (
-        normalized_tmdb * 0.20 +              # Normalized TMDB popularity (20%)
-        avg_credit_popularity * 0.25 +        # Quality of work (25%) 
-        wiki_pageviews * 0.15 +               # Wikipedia popularity (15%)
+        normalized_tmdb * 0.25 +              # TMDB popularity (25%)
+        avg_credit_popularity * 0.25 +        # Quality of work (25%)
+        wiki_pageviews * 0.20 +               # Wikipedia popularity (20%)
         wiki_importance * 0.15 +              # Wikipedia importance (15%)
-        awards_score * 0.15 +                 # Awards recognition (15%)
-        credits_factor * 0.05 +               # Quantity of work (5%)
-        longevity_factor * 0.05               # Career longevity (5%)
+        awards_score * 0.10 +                 # Awards (10%)
+        credits_factor * 0.03 +               # Quantity (3%)
+        longevity_factor * 0.02               # Longevity (2%)
     )
     
     print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}, Social={social_score:.2f}")
@@ -1405,6 +1405,9 @@ for page in range(start_page, TOTAL_PAGES + 1):
         num_credits = len(movie_credits) + len(tv_credits)
         years_active = calculate_years_active(movie_credits, tv_credits)
         avg_credit_popularity = calculate_credit_popularity(movie_credits, tv_credits)
+        
+        # Apply this after calculating avg_credit_popularity
+        avg_credit_popularity = min(avg_credit_popularity, 100) / 4  # Scale to max ~25
         
         # Calculate custom popularity score based on multiple factors
         custom_popularity = calculate_custom_popularity(
