@@ -860,8 +860,8 @@ class ActorToActorApp:
     def _download_and_display_image(self, url, profile_path, size):
         """Background task to download and process actor image"""
         try:
-            # Download image
-            response = requests.get(url, timeout=10)
+            # Download image with longer timeout (10 seconds)
+            response = requests.get(url, timeout=10)  # Increase from 3 to 10
             if response.status_code == 200:
                 # Load image from response data
                 img_data = response.content
@@ -879,7 +879,8 @@ class ActorToActorApp:
             else:
                 self.root.after(0, lambda: self.actor_image_label.config(image=""))
         except Exception as e:
-            print(f"Error processing image: {str(e)}")
+            print(f"Non-critical: Image loading error for {url[:30]}...: {str(e)}")
+            # Don't show the full error, it's not critical and clutters the output
             self.root.after(0, lambda: self.actor_image_label.config(image=""))
 
     def _load_actor_credits(self, actor_id, db_path):
@@ -1342,18 +1343,48 @@ class ActorToActorApp:
                                 conn = sqlite3.connect(self.db_connections['actors']['path'])
                                 cursor = conn.cursor()
                                 
-                                # Try movie credits first
-                                cursor.execute("SELECT title FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
-                                result = cursor.fetchone()
-                                if result:
-                                    movie_title = result[0]
-                                else:
-                                    # Try TV credits if movie not found
-                                    cursor.execute("SELECT name FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+                                # First check if these actors are actually connected by this credit
+                                cursor.execute("""
+                                    SELECT COUNT(*) FROM movie_credits 
+                                    WHERE id = ? AND actor_id = ?
+                                """, (credit_id, actor1))
+                                actor1_in_movie = cursor.fetchone()[0] > 0
+                                
+                                cursor.execute("""
+                                    SELECT COUNT(*) FROM movie_credits 
+                                    WHERE id = ? AND actor_id = ?
+                                """, (credit_id, actor2))
+                                actor2_in_movie = cursor.fetchone()[0] > 0
+                                
+                                # If both actors are in this movie
+                                if actor1_in_movie and actor2_in_movie:
+                                    cursor.execute("SELECT title FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
                                     result = cursor.fetchone()
                                     if result:
-                                        movie_title = result[0]
-                                conn.close()
+                                        movie_title = f"🎬 {result[0]}"
+                                else:
+                                    # Check TV credits
+                                    cursor.execute("""
+                                        SELECT COUNT(*) FROM tv_credits 
+                                        WHERE id = ? AND actor_id = ?
+                                    """, (credit_id, actor1))
+                                    actor1_in_tv = cursor.fetchone()[0] > 0
+                                    
+                                    cursor.execute("""
+                                        SELECT COUNT(*) FROM tv_credits 
+                                        WHERE id = ? AND actor_id = ?
+                                    """, (credit_id, actor2))
+                                    actor2_in_tv = cursor.fetchone()[0] > 0
+                                    
+                                    # If both actors are in this TV show
+                                    if actor1_in_tv and actor2_in_tv:
+                                        cursor.execute("SELECT name FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+                                        result = cursor.fetchone()
+                                        if result:
+                                            movie_title = f"📺 {result[0]}"
+                                            # Add note about different episodes for TV shows
+                                            movie_title += "\n(different episodes)"
+                                            
                             except Exception as e:
                                 print(f"Error finding credit: {str(e)}")
                     
@@ -1798,7 +1829,8 @@ class ActorToActorApp:
         except Exception as e:
             print(f"Error verifying connection: {str(e)}")
             return False  # On error, don't trust the connection
-        
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = ActorToActorApp(root)
