@@ -467,7 +467,6 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
     # Initialize external metrics
     wiki_pageviews = 0
     wiki_importance = 0
-    wikidata_score = 0
     awards_score = 0
     social_score = 0
     
@@ -479,16 +478,19 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         
         # Get awards data
         awards_score = fetch_awards_score(actor_name)
-
-    # Enhanced scoring formula with new data sources
+    
+    # NORMALIZE TMDB POPULARITY - ADD THIS LINE
+    normalized_tmdb = min(tmdb_popularity / 50.0, 1.0) * 25.0
+    
+    # Enhanced scoring formula with normalized TMDB value
     enhanced_score = (
-        tmdb_popularity * 0.20 +                # TMDB popularity (20%)
-        avg_credit_popularity * 0.25 +          # Quality of work (25%) 
-        wiki_pageviews * 0.10 +                 # Wikipedia popularity (10%)
-        wiki_importance * 0.10 +                # Wikipedia importance (10%)
-        awards_score * 0.15 +                   # Awards recognition (15%)
-        credits_factor * 0.10 +                 # Quantity of work (10%)
-        longevity_factor * 0.10                 # Career longevity (10%)
+        normalized_tmdb * 0.20 +              # Normalized TMDB popularity (20%)
+        avg_credit_popularity * 0.25 +        # Quality of work (25%) 
+        wiki_pageviews * 0.15 +               # Wikipedia popularity (15%)
+        wiki_importance * 0.15 +              # Wikipedia importance (15%)
+        awards_score * 0.15 +                 # Awards recognition (15%)
+        credits_factor * 0.05 +               # Quantity of work (5%)
+        longevity_factor * 0.05               # Career longevity (5%)
     )
     
     print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}, Social={social_score:.2f}")
