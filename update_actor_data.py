@@ -477,20 +477,18 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         wiki_pageviews = wiki_metrics['pageviews']
         wiki_importance = (wiki_metrics.get('revisions', 0) * 0.6) + (wiki_metrics.get('links', 0) * 0.4)
         
-        # Get social media followers
-        followers = get_social_media_followers_from_wikipedia(actor_name)
-        normalized_followers = normalize_followers(followers)
-        social_score = sum(normalized_followers.values()) / len(normalized_followers) if normalized_followers else 0
-    
+        # Get awards data
+        awards_score = fetch_awards_score(actor_name)
+
     # Enhanced scoring formula with new data sources
     enhanced_score = (
-        tmdb_popularity * 0.25 +                # TMDB popularity (25%)
+        tmdb_popularity * 0.20 +                # TMDB popularity (20%)
         avg_credit_popularity * 0.25 +          # Quality of work (25%) 
         wiki_pageviews * 0.10 +                 # Wikipedia popularity (10%)
         wiki_importance * 0.10 +                # Wikipedia importance (10%)
-        social_score * 0.10 +                   # Social media presence (10%)
-        credits_factor * 0.05 +                 # Quantity of work (5%)
-        longevity_factor * 0.05                 # Career longevity (5%)
+        awards_score * 0.15 +                   # Awards recognition (15%)
+        credits_factor * 0.10 +                 # Quantity of work (10%)
+        longevity_factor * 0.10                 # Career longevity (10%)
     )
     
     print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}, Social={social_score:.2f}")
@@ -1415,6 +1413,9 @@ for page in range(start_page, TOTAL_PAGES + 1):
             actor_name,
             actor_id  # Add actor ID parameter
         )
+        
+        # Normalize TMDB popularity to reduce extreme values
+        normalized_tmdb = min(tmdb_popularity / 50.0, 1.0)
         
         print(f"  TMDB Popularity: {tmdb_popularity:.2f}, Custom Popularity: {custom_popularity:.2f}")
         
