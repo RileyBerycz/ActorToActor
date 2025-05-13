@@ -446,21 +446,8 @@ def calculate_credit_popularity(movie_credits, tv_credits):
     return (popularity_avg * 0.7) + (quality_avg * 0.3)
 
 def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_credit_popularity, actor_name="", actor_id=None):
-    """
-    Calculate enhanced popularity score using multiple data sources
-    
-    Args:
-        tmdb_popularity: Raw popularity from TMDB
-        num_credits: Number of credits
-        years_active: Years active in industry
-        avg_credit_popularity: Average popularity of credits
-        actor_name: Name of the actor for external data lookup
-        actor_id: Actor's TMDB ID for additional metrics
-    
-    Returns:
-        Float representing enhanced balanced popularity score
-    """
-    # Basic factors from existing code
+    """Calculate enhanced popularity score on a 0-100 scale"""
+    # Basic factors
     longevity_factor = min(years_active / 15, 1.0)  # Cap at 15 years
     credits_factor = min(num_credits / 25, 1.0)     # Cap at 25 credits
     
@@ -468,7 +455,6 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
     wiki_pageviews = 0
     wiki_importance = 0
     awards_score = 0
-    social_score = 0
     
     if actor_name:
         # Get Wikipedia metrics
@@ -479,21 +465,31 @@ def calculate_custom_popularity(tmdb_popularity, num_credits, years_active, avg_
         # Get awards data
         awards_score = fetch_awards_score(actor_name)
     
-    # NORMALIZE TMDB POPULARITY - ADD THIS LINE
-    normalized_tmdb = min(tmdb_popularity / 50.0, 1.0) * 25.0
+    # Scale TMDB popularity (0-100 scale)
+    normalized_tmdb = min(tmdb_popularity / 30.0, 1.0) * 100.0
     
-    # Enhanced scoring formula with normalized TMDB value
+    # Scale credits popularity (0-100 scale)
+    normalized_credits = min(avg_credit_popularity, 25) * 4.0
+    
+    # Scale other factors to 0-100
+    wiki_views_scaled = wiki_pageviews * 100
+    wiki_imp_scaled = wiki_importance * 100
+    awards_scaled = awards_score * 100
+    credits_scaled = credits_factor * 100
+    longevity_scaled = longevity_factor * 100
+    
+    # Enhanced scoring formula with all components on 0-100 scale
     enhanced_score = (
-        normalized_tmdb * 0.25 +              # TMDB popularity (25%)
-        avg_credit_popularity * 0.25 +        # Quality of work (25%)
-        wiki_pageviews * 0.20 +               # Wikipedia popularity (20%)
-        wiki_importance * 0.15 +              # Wikipedia importance (15%)
-        awards_score * 0.10 +                 # Awards (10%)
-        credits_factor * 0.03 +               # Quantity (3%)
-        longevity_factor * 0.02               # Longevity (2%)
+        normalized_tmdb * 0.30 +       # TMDB popularity (30%)
+        normalized_credits * 0.25 +    # Quality of work (25%)
+        wiki_views_scaled * 0.20 +     # Wikipedia popularity (20%)
+        wiki_imp_scaled * 0.15 +       # Wikipedia importance (15%) 
+        awards_scaled * 0.07 +         # Awards recognition (7%)
+        credits_scaled * 0.02 +        # Quantity of work (2%)
+        longevity_scaled * 0.01        # Career longevity (1%)
     )
     
-    print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}, Social={social_score:.2f}")
+    print(f"  Metrics: Wiki views={wiki_pageviews:.2f}, Wiki imp={wiki_importance:.2f}")
     
     return enhanced_score
 
