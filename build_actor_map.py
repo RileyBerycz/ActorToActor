@@ -8,6 +8,7 @@ import pandas as pd
 import pickle
 import gzip
 import time
+from datetime import datetime
 
 # Constants
 REGIONS = ['GLOBAL', 'US', 'UK', 'CA', 'AU', 'FR', 'DE', 'IN', 'KR', 'JP', 'CN']
@@ -159,7 +160,24 @@ def build_actor_graph(actors, include_tv=True):
     
     # Process movie credits with similar filtering as TV
     for actor_id, actor in tqdm(actors.items(), desc="Processing movie credits"):
+        # Get current date to filter out future movies
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+
         for credit in actor.get('movie_credits', []):
+            # Skip future movies (those with release dates beyond current month of current year)
+            if credit.get('release_date'):
+                try:
+                    release_year = int(credit.get('release_date', '0000')[:4])
+                    release_month = int(credit.get('release_date', '00-00')[5:7]) if len(credit.get('release_date', '')) >= 7 else 0
+                    
+                    # Skip movies from the future
+                    if release_year > current_year or (release_year == current_year and release_month > current_month):
+                        continue
+                except (ValueError, IndexError):
+                    # If date parsing fails, proceed with the movie
+                    pass
+                    
             character = (credit.get('character') or "").strip().lower()
             # Stricter filtering for actors playing themselves
             if character in ['self', 'himself', 'herself'] or actor['name'].lower() in character.lower():
@@ -174,7 +192,9 @@ def build_actor_graph(actors, include_tv=True):
     # Process TV credits with much stronger filtering
     if include_tv:
         excluded_keywords = ['talk', 'game', 'reality', 'news', 'award', 'interview', 
-                            'host', 'special', 'ceremony', 'documentary', 'behind', 'making of']
+                            'host', 'special', 'ceremony', 'documentary', 'behind', 'making of',
+                            'tonight show', 'late night', 'late show', 'live with', 'the view',
+                            'jimmy', 'conan', 'ellen', 'oprah', 'inside the actors studio']
         excluded_titles = ['basquiat', 'biography', 'portrait', 'story of']  # Known problematic titles
         
         for actor_id, actor in tqdm(actors.items(), desc="Processing TV credits"):

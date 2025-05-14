@@ -11,6 +11,7 @@ function App() {
   });
   
   const [gameStarted, setGameStarted] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   
   // Detect user's region on app load
   useEffect(() => {
@@ -56,6 +57,12 @@ function App() {
     
     detectUserRegion();
   }, []);
+  
+  // Add this function to wrap the game start action
+  const handleStartGame = () => {
+    setIsLoading(true);  // Set loading to true first
+    setGameStarted(true); // Then start the game
+  };
   
   return (
     <div className="App">
@@ -120,7 +127,7 @@ function App() {
         <div className="start-game-container">
           <button 
             className="start-game-button"
-            onClick={() => setGameStarted(true)}
+            onClick={handleStartGame}
           >
             Start Game
           </button>
@@ -129,7 +136,11 @@ function App() {
         <div className="active-game-container">
           <ActorGame 
             settings={gameSettings} 
-            onReset={() => setGameStarted(false)}
+            onReset={() => {
+              setGameStarted(false);
+              setIsLoading(false);
+            }}
+            initialLoading={true} // Always start with loading true
           />
         </div>
       )}

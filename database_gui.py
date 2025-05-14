@@ -50,6 +50,7 @@ class ActorToActorApp:
                              command=lambda: self.notebook.select(self.stats_tab))
         tools_menu.add_command(label="Database Explorer", command=self.explore_database)
         tools_menu.add_command(label="Export Current Path", command=self.export_path)
+        tools_menu.add_command(label="Test Game Paths", command=self.test_game_path)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         
         # Help menu
@@ -1828,10 +1829,393 @@ class ActorToActorApp:
             
         except Exception as e:
             print(f"Error verifying connection: {str(e)}")
-            return False  # On error, don't trust the connection
+            return False
 
+    def test_game_path(self):
+        """Test a path between actors with the same filtering as the game"""
+        test_dialog = tk.Toplevel(self.root)
+        test_dialog.title("Test Game Paths")
+        test_dialog.geometry("600x700")
+        test_dialog.transient(self.root)
+        
+        # Create frames
+        input_frame = ttk.LabelFrame(test_dialog, text="Path Test Settings", padding=10)
+        input_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Actor inputs
+        ttk.Label(input_frame, text="Start Actor:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        start_entry = ttk.Entry(input_frame, width=30)
+        start_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(input_frame, text="Search", 
+                  command=lambda: self._select_test_actor(start_entry, "start")).grid(row=0, column=2)
+        
+        ttk.Label(input_frame, text="Target Actor:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        target_entry = ttk.Entry(input_frame, width=30)
+        target_entry.grid(row=1, column=1, padx=5, pady=5)
+        ttk.Button(input_frame, text="Search", 
+                  command=lambda: self._select_test_actor(target_entry, "target")).grid(row=1, column=2)
+        
+        # Game settings
+        settings_frame = ttk.Frame(input_frame)
+        settings_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=10)
+        
+        difficulty_var = tk.StringVar(value="normal")
+        ttk.Label(settings_frame, text="Difficulty:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Radiobutton(settings_frame, text="Easy", variable=difficulty_var, 
+                       value="easy").grid(row=0, column=1, padx=(0,10))
+        ttk.Radiobutton(settings_frame, text="Normal", variable=difficulty_var, 
+                       value="normal").grid(row=0, column=2, padx=(0,10))
+        ttk.Radiobutton(settings_frame, text="Hard", variable=difficulty_var, 
+                       value="hard").grid(row=0, column=3, padx=(0,10))
+        
+        exclude_mcu_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings_frame, text="Exclude MCU Movies", 
+                       variable=exclude_mcu_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=5)
+        
+        # Results frame
+        results_frame = ttk.LabelFrame(test_dialog, text="Path Results", padding=10)
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        results_text = tk.Text(results_frame, wrap=tk.WORD, height=20)
+        results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=results_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        results_text.config(yscrollcommand=scrollbar.set)
+        
+        # Button frame
+        button_frame = ttk.Frame(test_dialog)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Reference to store selected actor IDs
+        actor_ids = {"start": None, "target": None}
+        
+        def test_path():
+            if not actor_ids["start"] or not actor_ids["target"]:
+                messagebox.showwarning("Missing Input", "Please select both start and target actors")
+                return
+            
+            # Clear previous results
+            results_text.delete("1.0", tk.END)
+            results_text.insert("1.0", "Searching for path...\n\n")
+            
+            # Get settings
+            difficulty = difficulty_var.get()
+            exclude_mcu = exclude_mcu_var.get()
+            
+            # Map difficulty to max depth
+            max_depth = {"easy": 8, "normal": 12, "hard": 20}.get(difficulty, 12)
+            include_tv = difficulty == "hard"
+            
+            def run_test():
+                # This function will run in a background thread
+                path = self._find_game_path(
+                    int(actor_ids["start"]), 
+                    int(actor_ids["target"]),
+                    include_tv=include_tv,
+                    exclude_mcu=exclude_mcu,
+                    max_depth=max_depth,
+                    difficulty=difficulty
+                )
+                
+                # Update UI in the main thread
+                if path:
+                    # Format path for display
+                    path_text = self._format_game_path(path)
+                    test_dialog.after(0, lambda: results_text.delete("1.0", tk.END))
+                    test_dialog.after(0, lambda: results_text.insert("1.0", path_text))
+                else:
+                    test_dialog.after(0, lambda: results_text.delete("1.0", tk.END))
+                    test_dialog.after(0, lambda: results_text.insert("1.0", 
+                                                                  "No path found between these actors with the current settings.\n\n"
+                                                                  "This means either:\n"
+                                                                  "1. No connection exists\n"
+                                                                  "2. Connection requires more steps than allowed\n"
+                                                                  "3. Connection involves TV shows (not allowed in Easy/Normal)\n"
+                                                                  "4. Connection involves MCU movies (excluded by settings)"))
+            
+            # Start the search in a background thread
+            results_text.insert(tk.END, "Testing with settings:\n")
+            results_text.insert(tk.END, f"- Difficulty: {difficulty}\n")
+            results_text.insert(tk.END, f"- Max Steps: {max_depth//2}\n")
+            results_text.insert(tk.END, f"- Include TV: {include_tv}\n")
+            results_text.insert(tk.END, f"- Exclude MCU: {exclude_mcu}\n\n")
+            
+            threading.Thread(target=run_test, daemon=True).start()
+        
+        def _select_test_actor(entry_widget, actor_type):
+            name = entry_widget.get().strip()
+            if not name:
+                messagebox.showwarning("Missing Input", "Please enter an actor name")
+                return
+            
+            # Create dialog to select actor
+            select_dialog = tk.Toplevel(test_dialog)
+            select_dialog.title(f"Select {actor_type.capitalize()} Actor")
+            select_dialog.geometry("500x400")
+            select_dialog.transient(test_dialog)
+            select_dialog.grab_set()
+            
+            # Create tree for results
+            columns = ("id", "name", "popularity")
+            tree = ttk.Treeview(select_dialog, columns=columns, show="headings")
+            tree.heading("id", text="ID")
+            tree.heading("name", text="Name")
+            tree.heading("popularity", text="Popularity")
+            tree.column("id", width=50)
+            tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Search the database
+            conn = sqlite3.connect(self.db_connections['actors']['path'])
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, popularity FROM actors 
+                WHERE name LIKE ? 
+                ORDER BY popularity DESC
+                LIMIT 100
+            """, (f'%{name}%',))
+            results = cursor.fetchall()
+            conn.close()
+            
+            # Add results to tree
+            for actor_id, actor_name, popularity in results:
+                tree.insert("", tk.END, values=(actor_id, actor_name, f"{popularity:.1f}"))
+            
+            def select_actor():
+                selection = tree.selection()
+                if not selection:
+                    return
+                
+                selected_id = tree.item(selection[0], "values")[0]
+                selected_name = tree.item(selection[0], "values")[1]
+                actor_ids[actor_type] = selected_id
+                entry_widget.delete(0, tk.END)
+                entry_widget.insert(0, selected_name)
+                select_dialog.destroy()
+            
+            # Buttons
+            button_frame = ttk.Frame(select_dialog)
+            button_frame.pack(fill=tk.X, padx=10, pady=10)
+            ttk.Button(button_frame, text="Select", command=select_actor).pack(side=tk.RIGHT)
+            ttk.Button(button_frame, text="Cancel", command=select_dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        
+        # Test dialog buttons
+        ttk.Button(button_frame, text="Test Path", command=test_path).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Close", command=test_dialog.destroy).pack(side=tk.RIGHT)
+        
+        # Allow referencing the select_test_actor function from inside button commands
+        test_dialog._select_test_actor = _select_test_actor
 
-if __name__ == "__main__":
+    def _find_game_path(self, start_id, target_id, include_tv=False, exclude_mcu=False, max_depth=12, difficulty="normal"):
+        """Find a path between actors using the same rules as the game"""
+        # Create a filtered copy of the graph
+        filtered_graph = self.graph.copy()
+        
+        # Filter out TV shows if not in hard mode
+        if not include_tv:
+            edges_to_remove = []
+            for u, v, data in filtered_graph.edges(data=True):
+                if data.get('connection_type') == 'tv':
+                    edges_to_remove.append((u, v))
+            filtered_graph.remove_edges_from(edges_to_remove)
+        
+        # Filter out MCU movies if requested
+        if exclude_mcu:
+            edges_to_remove = []
+            for u, v, data in filtered_graph.edges(data=True):
+                for credit_id in data.get('credits', []):
+                    if self._is_mcu_credit(credit_id):
+                        edges_to_remove.append((u, v))
+                        break
+            filtered_graph.remove_edges_from(edges_to_remove)
+        
+        # Apply the same filters as the game does
+        edges_to_remove = []
+        for u, v, data in filtered_graph.edges(data=True):
+            valid_edge = False
+            for credit_id in data.get('credits', []):
+                # Verify this connection is valid with filter rules
+                if self._verify_game_connection(credit_id, u, v):
+                    valid_edge = True
+                    break
+            if not valid_edge:
+                edges_to_remove.append((u, v))
+        filtered_graph.remove_edges_from(edges_to_remove)
+        
+        # Try to find path
+        try:
+            path = nx.shortest_path(filtered_graph, source=start_id, target=target_id)
+            return path
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+    def _verify_game_connection(self, credit_id, actor1_id, actor2_id):
+        """Verify a connection using the same rules as the game"""
+        try:
+            conn = sqlite3.connect(self.db_connections['actors']['path'])
+            cursor = conn.cursor()
+            
+            # First check if this is a real movie
+            cursor.execute("""
+                SELECT title, character FROM movie_credits 
+                WHERE id = ? AND actor_id = ?
+            """, (credit_id, actor1_id))
+            actor1_movie = cursor.fetchone()
+            
+            # If actor1 is in this movie, check actor2
+            if actor1_movie:
+                title = actor1_movie[0].lower()
+                character = actor1_movie[1].lower() if actor1_movie[1] else ""
+                
+                # Check title for documentary/compilation keywords
+                if any(kw in title for kw in [
+                    "documentary", "compilation", "anthology", "collection",
+                    "final cut", "behind the scenes", "making of"
+                ]):
+                    conn.close()
+                    return False
+                
+                # Check character for self-appearances
+                if any(kw in character for kw in [
+                    "himself", "herself", "self", "archive footage", "archival", 
+                    "stock footage", "clips"
+                ]) or character == "":
+                    conn.close()
+                    return False
+                
+                # Check if actor2 is in the same movie
+                cursor.execute("""
+                    SELECT character FROM movie_credits 
+                    WHERE id = ? AND actor_id = ?
+                """, (credit_id, actor2_id))
+                actor2_movie = cursor.fetchone()
+                if actor2_movie:
+                    character2 = actor2_movie[0].lower() if actor2_movie[0] else ""
+                    
+                    # Check actor2's character for validity
+                    if any(kw in character2 for kw in [
+                        "himself", "herself", "self", "archive footage", "archival", 
+                        "stock footage", "clips"
+                    ]) or character2 == "":
+                        conn.close()
+                        return False
+                    
+                    # Both actors have valid characters in this movie
+                    conn.close()
+                    return True
+                
+            # Check TV credits similarly
+            cursor.execute("""
+                SELECT name, character FROM tv_credits 
+                WHERE id = ? AND actor_id = ?
+            """, (credit_id, actor1_id))
+            actor1_tv = cursor.fetchone()
+            
+            if actor1_tv:
+                title = actor1_tv[0].lower()
+                character = actor1_tv[1].lower() if actor1_tv[1] else ""
+                
+                # Check title for talk shows, etc.
+                if any(kw in title for kw in [
+                    "documentary", "talk", "tonight show", "late night", "jimmy", "ellen"
+                ]):
+                    conn.close()
+                    return False
+                    
+                # Check character for self-appearances
+                if any(kw in character for kw in [
+                    "himself", "herself", "self", "archive footage", "archival"
+                ]) or character == "":
+                    conn.close()
+                    return False
+                
+                # Check if actor2 is in the same TV show
+                cursor.execute("""
+                    SELECT character FROM tv_credits 
+                    WHERE id = ? AND actor_id = ?
+                """, (credit_id, actor2_id))
+                actor2_tv = cursor.fetchone()
+                if actor2_tv:
+                    character2 = actor2_tv[0].lower() if actor2_tv[0] else ""
+                    
+                    # Check actor2's character for validity
+                    if any(kw in character2 for kw in [
+                        "himself", "herself", "self", "archive footage", "archival"
+                    ]) or character2 == "":
+                        conn.close()
+                        return False
+                        
+                    # Both actors have valid characters in this TV show
+                    conn.close()
+                    return True
+                
+        except Exception as e:
+            print(f"Error verifying connection: {str(e)}")
+        
+        return False
+
+    def _format_game_path(self, path):
+        """Format a path for display with movies connecting actors"""
+        if not path or len(path) < 2:
+            return "Invalid path"
+        
+        output = []
+        output.append(f"Path found with {len(path)//2} connections:\n")
+        
+        # First actor
+        actor_name = self.graph.nodes[path[0]].get('name', f"Actor {path[0]}")
+        output.append(f"Start: {actor_name}")
+        
+        # For each pair of actors, find connecting movie
+        for i in range(0, len(path)-1, 2):
+            actor1 = path[i]
+            actor2 = path[i+1]
+            
+            # Find movie
+            if self.graph.has_edge(actor1, actor2):
+                credit_id = self.graph[actor1][actor2].get('credits', [None])[0]
+                if credit_id:
+                    movie_title = self._get_credit_title(credit_id)
+                    output.append(f"  → appeared in [{movie_title}] with")
+        
+            # Next actor
+            actor_name = self.graph.nodes[actor2].get('name', f"Actor {actor2}")
+            output.append(f"  {actor_name}")
+        
+        return "\n".join(output)
+
+    def _get_credit_title(self, credit_id):
+        """Get the title of a movie or TV show by credit ID"""
+        try:
+            conn = sqlite3.connect(self.db_connections['actors']['path'])
+            cursor = conn.cursor()
+            
+            # Try as movie first
+            cursor.execute("SELECT title FROM movie_credits WHERE id = ? LIMIT 1", (credit_id,))
+            result = cursor.fetchone()
+            if result:
+                conn.close()
+                return result[0]
+                
+            # Try as TV show
+            cursor.execute("SELECT name FROM tv_credits WHERE id = ? LIMIT 1", (credit_id,))
+            result = cursor.fetchone()
+            if result:
+                conn.close()
+                return f"{result[0]} (TV)"
+                
+            conn.close()
+            return "Unknown Title"
+        except Exception as e:
+            print(f"Error getting credit title: {str(e)}")
+            return "Unknown Title"
+        
+
+def main():
+    """Initialize and start the Actor Connections application."""
     root = tk.Tk()
     app = ActorToActorApp(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()

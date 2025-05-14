@@ -80,53 +80,8 @@ function GameControls({
       return;
     }
 
-    // FIX: Always search for actors in easy mode
-    if (settings.difficulty === 'easy') {
-      searchType = 'actor';
-      
-      // Search for actors that have shared movies with the last actor
-      const lastActor = path.length > 0 ? path[path.length - 1] : startActor;
-      
-      if (!lastActor || lastActor.type !== 'actor') {
-        return;
-      }
-      
-      // Find all actors who appeared in this movie
-      const matchingActors = Object.entries(actorData)
-        .filter(([actorId, actor]) => {
-          // Check if actor was in this movie
-          const wasInMovie = actor.movie_credits.some(credit => 
-            credit.id === lastActor.id
-          ) || (settings.difficulty === 'hard' && actor.tv_credits ? 
-            actor.tv_credits.some(credit => credit.id === lastActor.id) : false);
-          
-          // Include the target actor if they were in this movie!
-          const isTargetActor = targetActor && actorId === targetActor.id && wasInMovie;
-          
-          // Don't show actors already in the path EXCEPT the target actor if valid
-          const alreadyInPath = path.some(item => 
-            item.type === 'actor' && item.id === actorId && !isTargetActor
-          );
-          
-          // Match name to query
-          const nameMatches = actor.name.toLowerCase().includes(lowerQuery);
-          
-          return wasInMovie && !alreadyInPath && nameMatches;
-        })
-        .map(([id, actor]) => ({
-          id,
-          type: 'actor',
-          name: actor.name || 'Unknown Actor',
-          profile_path: actor.profile_path,
-          popularity: actor.popularity || 0
-        }))
-        .sort((a, b) => b.popularity - a.popularity)
-        .slice(0, 10);
-      
-      setSearchResults(matchingActors);
-      
-      return; // Exit early from the function
-    }
+    // Add logging for debugging
+    console.log("Search query with settings:", query, settings.difficulty);
     
     const lowerQuery = query.toLowerCase();
     
@@ -172,9 +127,8 @@ function GameControls({
       
       setSearchResults(matchingActors);
     } else {
-      // Logic for searching movies
+      // Logic for searching movies/shows based on difficulty
       const lastActor = path.length > 0 ? path[path.length - 1] : startActor;
-      
       if (!lastActor || (lastActor.type !== 'actor' && !startActor)) {
         return;
       }
@@ -182,19 +136,67 @@ function GameControls({
       const actor = actorData[lastActor.id || startActor.id];
       if (!actor) return;
       
-      // Get movies and TV shows based on difficulty
+      // Get movies only for easy/normal mode, include TV for hard mode
       let credits = [...actor.movie_credits];
+      
+      // Only add TV credits in hard mode
       if (settings.difficulty === 'hard') {
         credits = [...credits, ...actor.tv_credits];
       }
       
-      // Apply MCU filter if needed
+      // Always apply MCU filter if needed
       if (settings.excludeMcu) {
         credits = credits.filter(credit => !credit.is_mcu);
       }
       
+      // Add additional filtering for talk shows regardless of difficulty
+      const talkShowKeywords = ['tonight show', 'late night', 'late show', 'jimmy'];
+      credits = credits.filter(credit => {
+        const title = (credit.title || '').toLowerCase();
+        return !talkShowKeywords.some(keyword => title.includes(keyword));
+      });
+      
       // Filter by query and not already in path
-      const matchingCredits = credits
+      const filteredCredits = credits.filter(credit => {
+        const title = (credit.title || '').toLowerCase();
+        const character = (credit.character || '').toLowerCase();
+        
+        // Filter out compilations, documentaries, etc.
+        if (title.includes('documentary') ||
+            title.includes('compilation') ||
+            title.includes('anthology') || 
+            title.includes('collection') ||
+            title.includes('final cut') ||
+            title.includes('behind the scenes') ||
+            title.includes('making of')) {
+          return false;
+        }
+        
+        // Filter out archive footage appearances
+        if (character.includes('himself') || 
+            character.includes('herself') ||
+            character.includes('self') ||
+            character === '' ||
+            character.includes('archive footage') ||
+            character.includes('archival') ||
+            character.includes('stock footage') ||
+            character.includes('clips')) {
+          return false;
+        }
+        
+        // Also filter by credit type if available
+        const creditType = (credit.credit_type || '').toLowerCase();
+        if (creditType.includes('archive') || 
+            creditType === 'cameo' || 
+            creditType.includes('footage')) {
+          return false;
+        }
+        
+        return true;
+      });
+      
+      // Then apply search query filtering to the already filtered credits
+      const matchingCredits = filteredCredits
         .filter(credit => {
           const title = credit.title || credit.name || '';
           const alreadyInPath = path.some(item => item.type === 'movie' && item.id === credit.id);
@@ -210,6 +212,7 @@ function GameControls({
         .sort((a, b) => b.popularity - a.popularity)
         .slice(0, 10);
       
+      // Use the properly filtered results
       setSearchResults(matchingCredits);
     }
   };
@@ -275,9 +278,16 @@ function GameControls({
       String(result.id) === String(targetActor.id)) {
       // We found the target! Trigger win condition after a short delay
       console.log("TARGET ACTOR FOUND! Path complete.");
+      console.log("Selection ID:", result.id, "Target ID:", targetActor.id);
+      
       setTimeout(() => {
         if (typeof onComplete === 'function') {
-          onComplete([...path, result]);
+          // Create a proper array including the final selection
+          const completePath = [...path, result];
+          console.log("Calling onComplete with path:", completePath);
+          onComplete(completePath);
+        } else {
+          console.error("onComplete is not a function:", onComplete);
         }
       }, 500);
     }

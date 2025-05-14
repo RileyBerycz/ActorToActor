@@ -180,5 +180,111 @@ def test_basquiat_connection():
     
     print("\n==== Test Complete ====")
 
+def test_specific_actor_connection(actor1_name="Jackie Chan", actor2_name="Keanu Reeves"):
+    print(f"==== Testing Connection Between '{actor1_name}' and '{actor2_name}' ====")
+    
+    # Find the actors database
+    possible_paths = [
+        "public/actors.db",
+        "actor-game/public/actors.db",
+        "./actors.db"
+    ]
+    
+    actors_db = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            actors_db = path
+            print(f"Found actors database at {path}")
+            break
+    
+    if not actors_db:
+        print("Error: Actors database not found!")
+        return
+        
+    # Connect to the actors database
+    conn = sqlite3.connect(actors_db)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Get actor IDs
+    cursor.execute(f"SELECT id FROM actors WHERE name LIKE '%{actor1_name.split()[0]}%{actor1_name.split()[-1]}%'")
+    actor1_id = cursor.fetchone()
+    cursor.execute(f"SELECT id FROM actors WHERE name LIKE '%{actor2_name.split()[0]}%{actor2_name.split()[-1]}%'")
+    actor2_id = cursor.fetchone()
+    
+    if not actor1_id or not actor2_id:
+        print(f"Could not find IDs for {actor1_name} and/or {actor2_name}")
+        return
+        
+    actor1_id = actor1_id['id']
+    actor2_id = actor2_id['id']
+    print(f"Actor IDs: {actor1_name}={actor1_id}, {actor2_name}={actor2_id}")
+    
+    # Check movie credits where both actors appear
+    movie_query = """
+    SELECT DISTINCT m1.id, m1.title, m1.release_date, m1.popularity, m1.character as char1, m2.character as char2
+    FROM movie_credits m1
+    JOIN movie_credits m2 ON m1.id = m2.id
+    WHERE m1.actor_id = ? AND m2.actor_id = ?
+    """
+    cursor.execute(movie_query, (actor1_id, actor2_id))
+    movie_results = cursor.fetchall()
+    
+    if movie_results:
+        print(f"\nFound {len(movie_results)} shared movies:")
+        for row in movie_results:
+            print(f"Movie: {row['title']} (ID: {row['id']}, Released: {row['release_date']})")
+            print(f"  {actor1_name} as '{row['char1']}'")
+            print(f"  {actor2_name} as '{row['char2']}'")
+            print(f"  Popularity: {row['popularity']}")
+    else:
+        print("\nNo shared movies found")
+    
+    # Check for problematic movie types
+    print("\n=== Checking for problematic movie types ===")
+    problematic_movies_query = """
+    SELECT id, title, lower(title) as lower_title 
+    FROM movie_credits 
+    WHERE actor_id IN (?, ?) 
+    AND (
+        lower(title) LIKE '%documentary%' OR
+        lower(title) LIKE '%compilation%' OR
+        lower(title) LIKE '%anthology%' OR
+        lower(title) LIKE '%collection%' OR
+        lower(title) LIKE '%final cut%' OR
+        lower(title) LIKE '%behind the scenes%' OR
+        lower(title) LIKE '%making of%'
+    )
+    GROUP BY id
+    """
+    cursor.execute(problematic_movies_query, (actor1_id, actor2_id))
+    problematic_results = cursor.fetchall()
+    
+    if problematic_results:
+        print(f"Found {len(problematic_results)} potentially problematic movies:")
+        for row in problematic_results:
+            print(f"Movie: {row['title']} (ID: {row['id']})")
+            
+            # Check if both actors are in this movie
+            check_query = """
+            SELECT COUNT(DISTINCT actor_id) as actor_count
+            FROM movie_credits
+            WHERE id = ? AND actor_id IN (?, ?)
+            """
+            cursor.execute(check_query, (row['id'], actor1_id, actor2_id))
+            count_result = cursor.fetchone()
+            
+            if count_result and count_result['actor_count'] == 2:
+                print("  ⚠️ BOTH ACTORS APPEAR IN THIS FILM - FALSE CONNECTION DETECTED!")
+            else:
+                print("  Only one actor appears in this film")
+    else:
+        print("No potentially problematic movies found")
+    
+    conn.close()
+
 if __name__ == "__main__":
     test_basquiat_connection()
+    # test_specific_actor_connection("Jackie Chan", "Keanu Reeves")
+    # You can test other pairs too:
+    # test_specific_actor_connection("Samuel L. Jackson", "Pedro Pascal")
