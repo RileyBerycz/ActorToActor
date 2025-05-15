@@ -38,6 +38,8 @@ function ActorGame({ settings, onReset, initialLoading }) {
   const PROFILE_SIZE = "w185";
   const POSTER_SIZE = "w342";
   const defaultImageUrl = "/placeholder-actor.png";
+  const SQL_CDN_URL = 'https://sql.js.org/dist/sql-wasm.wasm';
+  const FALLBACK_CDN_URL = 'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.wasm';
   
   // Helper function to get image URL 
   const getImageUrl = (path, size = 'w185') => {
@@ -301,7 +303,8 @@ function ActorGame({ settings, onReset, initialLoading }) {
   const selectActors = useCallback(async () => {
     if (!actorData || selectingActors) return;
     
-    console.log("Starting actor selection using pre-calculated connections");
+    console.log("🔍 [DEBUG] Starting actor selection process");
+    console.time("ActorSelection");
     setSelectingActors(true);
     setIsLoading(true);
     
@@ -311,6 +314,7 @@ function ActorGame({ settings, onReset, initialLoading }) {
       
       // Try to load connections database
       setLoadingMessage("Loading optimal connections...");
+      console.time("ConnectionDB");
       
       // Try each connection database source
       let connectionDb = null;
@@ -324,56 +328,107 @@ function ActorGame({ settings, onReset, initialLoading }) {
       
       for (const source of connectionSources) {
         try {
-          console.log(`Trying to load from ${source.name}...`);
+          console.log(`🔍 [DEBUG] Trying to load from ${source.name}...`);
+          console.time(`Fetch:${source.name}`);
           response = await fetch(source.url);
+          console.timeEnd(`Fetch:${source.name}`);
+          
           if (response.ok) {
-            console.log(`Successfully loaded from ${source.name}`);
+            console.log(`✅ [DEBUG] Successfully loaded from ${source.name}`);
             break;
           }
         } catch (err) {
-          console.log(`${source.name} not available:`, err.message);
+          console.log(`❌ [DEBUG] ${source.name} not available:`, err.message);
         }
       }
       
       if (!response || !response.ok) {
-        console.warn("Connections database not found, falling back to random selection");
+        console.warn("❌ [DEBUG] Connections database not found, will use random selection");
         // Continue with manual actor selection below
       } else {
         // Load connection database and select a pre-made path
+        console.time("ArrayBuffer");
         const arrayBuffer = await response.arrayBuffer();
+        console.timeEnd("ArrayBuffer");
+        
         const uInt8Array = new Uint8Array(arrayBuffer);
         
         // Initialize SQL.js if not already done
         if (!window.SQL) {
-          const SQL_CDN_URL = 'https://sql.js.org/dist/sql-wasm.wasm';
-          const FALLBACK_CDN_URL = 'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.wasm';
-          
+          console.log("🔍 [DEBUG] Initializing SQL.js");
+          console.time("SQLInit");
           try {
             const initSqlJs = (await import('sql.js')).default;
             window.SQL = await initSqlJs({ locateFile: file => SQL_CDN_URL });
+            console.log("✅ [DEBUG] SQL.js initialized from primary source");
           } catch (err) {
-            console.warn("Primary SQL init failed, trying fallback:", err);
-            const initSqlJs = (await import('sql.js')).default;
-            window.SQL = await initSqlJs({ locateFile: file => FALLBACK_CDN_URL });
+            console.warn("⚠️ [DEBUG] Primary SQL init failed, trying fallback:", err);
+            try {
+              const initSqlJs = (await import('sql.js')).default;
+              window.SQL = await initSqlJs({ locateFile: file => FALLBACK_CDN_URL });
+              console.log("✅ [DEBUG] SQL.js initialized from fallback source");
+            } catch (err2) {
+              console.error("❌ [DEBUG] Both SQL init attempts failed:", err2);
+            }
           }
+          console.timeEnd("SQLInit");
         }
         
         // Open the connection db
+        console.time("OpenDB");
         connectionDb = new window.SQL.Database(uInt8Array);
+        console.timeEnd("OpenDB");
+        console.log("✅ [DEBUG] Connection database opened successfully");
         
         // Query for connections matching the current difficulty
+        let queryText = '';
+
+        // Query for connections matching the current difficulty
         try {
-          const query = `
+          console.time("ExecuteQuery");
+          
+          // Simple query without popularity - just difficulty and region
+          queryText = `
             SELECT * FROM actor_connections 
-            WHERE difficulty = '${settings.difficulty}' 
-            ORDER BY RANDOM() 
-            LIMIT 20
+            WHERE difficulty = '${settings.difficulty}'
+            AND region = '${settings.region}'
+            ORDER BY RANDOM()
+            LIMIT 1
           `;
           
-          const result = connectionDb.exec(query);
+          console.log("🔍 [DEBUG] Executing query:", queryText);
+          let result = connectionDb.exec(queryText);
+          console.timeEnd("ExecuteQuery");
           
-          if (result && result[0]?.values?.length > 0) {
-            console.log(`Found ${result[0].values.length} pre-calculated paths`);
+          console.log("🔍 [DEBUG] Query result structure:", 
+            result ? 
+              `Found ${result.length} result sets, first set has ${result[0]?.values?.length || 0} rows` : 
+              "No results");
+        
+          // If no results, fall back to GLOBAL region
+          if (!result[0] || !result[0].values || result[0].values.length === 0) {
+            console.log(`🔄 [DEBUG] No connections for ${settings.region}, falling back to GLOBAL`);
+            console.time("FallbackQuery");
+            const fallbackQuery = `
+              SELECT * FROM actor_connections 
+              WHERE difficulty = '${settings.difficulty}'
+              AND region = 'GLOBAL'
+              ORDER BY RANDOM()
+              LIMIT 1
+            `;
+            
+            console.log("🔍 [DEBUG] Executing fallback query:", fallbackQuery);
+            result = connectionDb.exec(fallbackQuery);
+            console.timeEnd("FallbackQuery");
+            
+            console.log("🔍 [DEBUG] Fallback query result:", 
+              result ? 
+                `Found ${result.length} result sets, first set has ${result[0]?.values?.length || 0} rows` : 
+                "No results");
+          }
+        
+          if (result && result[0] && result[0].values && result[0].values.length > 0) {
+            console.log(`✅ [DEBUG] Found ${result[0].values.length} pre-calculated paths`);
             
             // Select a random path from the results
             const pathIndex = Math.floor(Math.random() * result[0].values.length);
@@ -384,11 +439,24 @@ function ActorGame({ settings, onReset, initialLoading }) {
               pathData[col] = result[0].values[pathIndex][idx];
             });
             
-            console.log("Selected path:", pathData);
+            console.log("🔍 [DEBUG] Selected path data:", {
+              start_id: pathData.start_id,
+              target_id: pathData.target_id,
+              difficulty: pathData.difficulty,
+              connection_length: pathData.connection_length,
+              region: pathData.region,
+              has_optimal_path: !!pathData.optimal_path
+            });
             
             // Get the start and target actor IDs
             const startId = pathData.start_id;
             const targetId = pathData.target_id;
+            
+            // Check if actors exist in data
+            console.log("🔍 [DEBUG] Checking if actors exist in loaded data:", {
+              startExists: !!actorData[startId],
+              targetExists: !!actorData[targetId]
+            });
             
             // Load just those two specific actors
             if (actorData[startId] && actorData[targetId]) {
@@ -396,16 +464,19 @@ function ActorGame({ settings, onReset, initialLoading }) {
               const target = { id: targetId, ...actorData[targetId], type: 'actor' };
               
               // Decompress optimal path data
+              console.time("DecompressPath");
               const compressedPath = pathData.optimal_path;
               let optimalPath = [];
               
               try {
                 // The path is compressed as a gzipped JSON string
+                console.log("🔍 [DEBUG] Attempting to decompress optimal path");
                 const textDecoder = new TextDecoder('utf-8');
                 const gunzipBlob = (new Blob([compressedPath], { type: 'application/gzip' }));
                 
                 // We'll need to use streaming decompression APIs if available
                 if ('DecompressionStream' in window) {
+                  console.log("🔍 [DEBUG] Using DecompressionStream API");
                   const ds = new DecompressionStream('gzip');
                   const decompressedStream = gunzipBlob.stream().pipeThrough(ds);
                   const decompressedBlob = await new Response(decompressedStream).blob();
@@ -414,6 +485,9 @@ function ActorGame({ settings, onReset, initialLoading }) {
                   // Decompress the path
                   const compressedPathData = JSON.parse(jsonText);
                   
+                  console.log("🔍 [DEBUG] Path JSON parsed successfully, contains", 
+                    Array.isArray(compressedPathData) ? compressedPathData.length : "non-array data");
+                
                   // Convert the compressed format back to the full format
                   optimalPath = compressedPathData.map(item => {
                     const fullItem = {
@@ -432,16 +506,20 @@ function ActorGame({ settings, onReset, initialLoading }) {
                     return fullItem;
                   });
                   
-                  console.log("Successfully decompressed optimal path:", optimalPath);
+                  console.log("✅ [DEBUG] Successfully decompressed optimal path with", optimalPath.length, "items");
+                } else {
+                  console.warn("⚠️ [DEBUG] DecompressionStream not available, can't decompress path");
                 }
               } catch (decompressionError) {
-                console.warn("Error decompressing path:", decompressionError);
+                console.warn("⚠️ [DEBUG] Error decompressing path:", decompressionError);
+                console.log("🔄 [DEBUG] Will calculate path manually");
                 // We'll calculate the path manually if decompression fails
                 optimalPath = calculateOptimalPath(startId, targetId);
               }
+              console.timeEnd("DecompressPath");
               
               // Set actors and game state
-              console.log(`Using pre-calculated connection: ${start.name} → ${target.name}`);
+              console.log(`✅ [DEBUG] Using connection: ${start.name} → ${target.name}`);
               setStartActor(start);
               setTargetActor(target);
               setOptimalPath(optimalPath);
@@ -456,30 +534,38 @@ function ActorGame({ settings, onReset, initialLoading }) {
                 setSelectingActors(false);
               }, 800);
               
+              console.timeEnd("ActorSelection");
               return; // We're done!
             } else {
-              console.warn("One or both actors not found in actor data, falling back to manual selection");
+              console.warn(`❌ [DEBUG] Actor not found in data: ${!actorData[startId] ? startId : ''} ${!actorData[targetId] ? targetId : ''}`);
+              console.log("🔄 [DEBUG] Falling back to random selection");
             }
+          } else {
+            console.log("❌ [DEBUG] No connections found for query:", queryText);
           }
         } catch (dbError) {
-          console.error("Error querying connections database:", dbError);
+          console.error("❌ [DEBUG] Error executing query:", dbError);
+          console.log("Query was:", queryText);
         } finally {
           if (connectionDb) {
             try {
               connectionDb.close();
             } catch (err) {
-              console.warn("Error closing connection DB:", err);
+              console.warn("⚠️ [DEBUG] Error closing connection DB:", err);
             }
           }
         }
+        console.timeEnd("ConnectionDB");
       }
       
-      // If we reach here, we need to fall back to the existing actor selection logic
-      console.log("Using fallback actor selection method");
+      // FALLBACK: Manual actor selection if we reach here
+      console.log("🔄 [DEBUG] Using fallback actor selection method");
+      console.time("ManualActorSelection");
       
-      console.log("Total actors available:", Object.keys(actorData).length);
+      console.log("🔍 [DEBUG] Total actors available:", Object.keys(actorData).length);
       
       // Step 1: Get all actors with profile images
+      console.time("FilterActors");
       const actorsWithProfiles = Object.entries(actorData)
         .filter(([_, actor]) => {
           return actor.profile_path && actor.movie_credits.length >= 3;
@@ -489,24 +575,29 @@ function ActorGame({ settings, onReset, initialLoading }) {
           ...actor,
           type: 'actor'
         }));
+      console.timeEnd("FilterActors");
       
-      console.log(`Found ${actorsWithProfiles.length} actors with profile images`);
+      console.log(`✅ [DEBUG] Found ${actorsWithProfiles.length} actors with profile images`);
       
       if (actorsWithProfiles.length < 2) {
-        throw new Error(`Not enough actors available for region ${settings.region}. Try another region.`);
+        throw new Error(`❌ [DEBUG] Not enough actors available for region ${settings.region}. Try another region.`);
       }
       
       // Step 2: Sort by popularity for better selection
+      console.time("SortActors");
       const sortedActors = [...actorsWithProfiles].sort((a, b) => {
         return b.popularity - a.popularity;
       });
+      console.timeEnd("SortActors");
       
       // Step 3: Select random start actor (from top 20 popular actors)
       const topCount = Math.min(20, sortedActors.length);
       const startIndex = Math.floor(Math.random() * topCount);
       const start = sortedActors[startIndex];
+      console.log("✅ [DEBUG] Selected start actor:", start.name);
       
       // Step 4: Find a suitable target actor with verified path
+      console.time("FindTargetActor");
       let target = null;
       let attempts = 0;
       const maxAttempts = 30; // Try harder to find a good match
@@ -530,34 +621,39 @@ function ActorGame({ settings, onReset, initialLoading }) {
         if (settings.difficulty !== 'hard') {
           // For performance, only check every other candidate
           if (attempts % 2 === 0 || attempts >= maxAttempts/2) {
+            console.log(`🔍 [DEBUG] Verifying path attempt ${attempts}: ${start.name} → ${candidate.name}`);
+            console.time(`VerifyPath${attempts}`);
             const pathExists = await Promise.resolve(
               verifyPathExists(start.id, candidate.id, 
                 settings.difficulty === 'easy' ? 6 : 10)
             );
+            console.timeEnd(`VerifyPath${attempts}`);
             
             if (pathExists) {
               target = candidate;
-              console.log(`Found valid path between ${start.name} and ${candidate.name} in ${attempts} attempts`);
+              console.log(`✅ [DEBUG] Found valid path between ${start.name} and ${candidate.name} in ${attempts} attempts`);
               break;
             } else {
-              console.log(`No valid path between ${start.name} and ${candidate.name}, attempt ${attempts}`);
+              console.log(`❌ [DEBUG] No valid path between ${start.name} and ${candidate.name}, attempt ${attempts}`);
             }
           }
         } else {
           // For hard mode, don't verify path
           target = candidate;
+          console.log("✅ [DEBUG] Hard mode - using candidate without path verification");
           break;
         }
       }
+      console.timeEnd("FindTargetActor");
       
-      // If no good target found after attempts, pick any different actor
+      // If no good target found after attempts, pick any actor
       if (!target) {
-        console.log("Could not find target with verified path, picking any actor");
+        console.log("⚠️ [DEBUG] Could not find target with verified path, picking any actor");
         const fallbackIndex = startIndex === 0 ? 1 : 0;
         target = sortedActors[fallbackIndex];
       }
       
-      console.log(`Selected ${start.name} and ${target.name}`);
+      console.log(`✅ [DEBUG] Final selection: ${start.name} and ${target.name}`);
       
       // Set actors and game phase
       setStartActor(start);
@@ -569,10 +665,14 @@ function ActorGame({ settings, onReset, initialLoading }) {
       setLoadingProgress(95);
       setTimeout(() => {
         try {
+          console.log("🔍 [DEBUG] Calculating optimal path...");
+          console.time("OptimalPathCalc");
           const path = calculateOptimalPath(start.id, target.id);
+          console.timeEnd("OptimalPathCalc");
+          console.log("✅ [DEBUG] Optimal path calculation complete, length:", path.length);
           setOptimalPath(path);
         } catch (error) {
-          console.error("Error calculating optimal path:", error);
+          console.error("❌ [DEBUG] Error calculating optimal path:", error);
           setOptimalPath([]);
         }
         
@@ -586,12 +686,16 @@ function ActorGame({ settings, onReset, initialLoading }) {
         }, 800);
       }, 500);
       
+      console.timeEnd("ManualActorSelection");
+      
     } catch (error) {
-      console.error("Error selecting actors:", error);
+      console.error("❌ [DEBUG] Error in actor selection:", error);
       setError(`Failed to select actors: ${error.message}`);
       setIsLoading(false);
       setLoading(false);
       setSelectingActors(false);
+    } finally {
+      console.timeEnd("ActorSelection");
     }
   }, [actorData, calculateOptimalPath, selectingActors, settings.difficulty, settings.region, verifyPathExists]);
 
@@ -743,9 +847,6 @@ function ActorGame({ settings, onReset, initialLoading }) {
       
       // Initialize SQL.js
       setLoadingMessage("Initializing database engine...");
-      
-      const SQL_CDN_URL = 'https://sql.js.org/dist/sql-wasm.wasm';
-      const FALLBACK_CDN_URL = 'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.wasm';
       
       let SQL;
       try {
@@ -1016,22 +1117,6 @@ function ActorGame({ settings, onReset, initialLoading }) {
     }
   }, [loadDatabase, selectActors, loading, actorData, selectingActors]);
 
-  // Safety timeout to prevent infinite loading
-  useEffect(() => {
-    const safetyTimer = setTimeout(() => {
-      if (isLoading) {
-        console.warn("Loading safety timeout triggered after 20 seconds");
-        setIsLoading(false);
-        
-        if (!startActor || !targetActor) {
-          setError("Loading took too long. Please try again with a different region.");
-        }
-      }
-    }, 20000);
-    
-    return () => clearTimeout(safetyTimer);
-  }, [isLoading, startActor, targetActor]);
-
   // Manage loading screen visibility
   useEffect(() => {
     console.log("Loading state:", { 
@@ -1236,7 +1321,7 @@ function ActorGame({ settings, onReset, initialLoading }) {
           {optimalPath && optimalPath.length > 0 && (
             <div className="optimal-path-section">
               <button 
-                className="show-optimal-path-button"  // Changed from "show-optimal_path-button"
+                className="show-optimal_path-button"  // Changed from "show-optimal_path-button"
                 onClick={() => setShowOptimalPath(!showOptimalPath)}
               >
                 {showOptimalPath ? "Hide" : "Show"} Optimal Path ({Math.floor(optimalPath?.length / 2) || 0} steps)

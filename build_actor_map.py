@@ -17,10 +17,9 @@ REGIONS_TO_PROCESS = ['GLOBAL', 'US', 'UK']  # Prioritize these regions for conn
 
 # Difficulty settings
 DIFFICULTY_CONFIG = {
-    'easy': {'min_connections': 1, 'max_connections': 3, 'count': 1000},
-    'normal': {'min_connections': 3, 'max_connections': 5, 'count': 1000},
-    # Make hard mode more achievable but still challenging
-    'hard': {'min_connections': 4, 'max_connections': 7, 'count': 1000}  # Reduced from 5-8
+    'easy': {'min_connections': 1, 'max_connections': 2, 'count': 1000},
+    'normal': {'min_connections': 3, 'max_connections': 4, 'count': 1000},
+    'hard': {'min_connections': 4, 'max_connections': 20, 'count': 1000}  # 20 is arbitrary upper bound
 }
 
 def load_actor_data(region):
@@ -246,42 +245,44 @@ def build_actor_graph(actors, include_tv=True):
     return G
 
 def find_paths_by_difficulty(G, actors, difficulty_config):
-    """Find paths between actors for different difficulty levels"""
     print("Finding optimal paths by difficulty...")
     paths_by_difficulty = {
         'easy': [],
         'normal': [],
         'hard': []
     }
-    
+
     # Determine actor popularity for potential start points.
     actor_popularity = [(actor_id, actors[actor_id]['popularity']) 
                         for actor_id in G.nodes() if actor_id in actors]
     actor_popularity.sort(key=lambda x: x[1], reverse=True)
-    
-    top_actors = [a[0] for a in actor_popularity[:int(len(actor_popularity) * 0.1)]]
-    top_actors = top_actors[:100]  # Limit to 100 to reduce computation.
-    
-    print(f"Using {len(top_actors)} top actors as potential start points")
+
+    # Define popularity threshold (e.g., top 20% for easy/normal, top 10% for hard)
+    easy_normal_popular = [a[0] for a in actor_popularity[:max(1, int(len(actor_popularity) * 0.2))]]
+    hard_popular = [a[0] for a in actor_popularity[:max(1, int(len(actor_popularity) * 0.1))]]
+
     processed_pairs = set()
-    
+
     for difficulty, config in difficulty_config.items():
         print(f"Processing {difficulty} difficulty...")
         min_connections = config['min_connections']
         max_connections = config['max_connections']
         target_count = config['count']
-        
-        for start_actor_id in tqdm(top_actors, desc=f"Finding {difficulty} paths"):
-            if difficulty == 'easy':
-                target_pool = [a[0] for a in actor_popularity[:int(len(actor_popularity)*0.3)]]
-            elif difficulty == 'normal':
-                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity)*0.15):int(len(actor_popularity)*0.6)]]
-            else:  # hard
-                target_pool = [a[0] for a in actor_popularity[int(len(actor_popularity)*0.4):]]
-            
-            target_pool = [a for a in target_pool if a != start_actor_id]
-            sampled_targets = np.random.choice(target_pool, min(20, len(target_pool)), replace=False)
-            
+
+        # Use only global actors for hard
+        if difficulty == 'hard':
+            start_pool = hard_popular
+            target_pool = hard_popular
+        else:
+            start_pool = easy_normal_popular
+            target_pool = easy_normal_popular
+
+        for start_actor_id in tqdm(start_pool, desc=f"Finding {difficulty} paths"):
+            sampled_targets = np.random.choice(
+                [a for a in target_pool if a != start_actor_id], 
+                min(20, len(target_pool)-1), 
+                replace=False
+            )
             for target_actor_id in sampled_targets:
                 pair_key = tuple(sorted([start_actor_id, target_actor_id]))
                 if pair_key in processed_pairs:
@@ -364,22 +365,23 @@ def compress_path(path):
     json_str = json.dumps(minimal_path)
     return gzip.compress(json_str.encode('utf-8'))
 
-def create_connection_database(paths_by_difficulty):
+def create_connection_database(paths_by_difficulty, region="GLOBAL"):
     """Create SQLite database with actor connections"""
-    print("Creating connection database...")
+    print(f"Creating connection database for region {region}...")
     
     # Always use the standard path and ensure the directory exists
     os.makedirs(os.path.dirname(CONNECTION_DB_PATH), exist_ok=True)
     connection_path = CONNECTION_DB_PATH
     
+    # Delete the existing database to create a fresh one with the new schema
     if os.path.exists(connection_path):
         os.remove(connection_path)
-    
-    os.makedirs(os.path.dirname(connection_path), exist_ok=True)
+        print(f"Removed existing database at {connection_path}")
     
     conn = sqlite3.connect(connection_path)
     cursor = conn.cursor()
     
+    # Create the tables with the new schema
     cursor.execute('''
     CREATE TABLE actor_connections (
         start_id TEXT NOT NULL,
@@ -387,24 +389,26 @@ def create_connection_database(paths_by_difficulty):
         connection_length INTEGER NOT NULL,
         optimal_path BLOB NOT NULL,
         difficulty TEXT NOT NULL,
-        PRIMARY KEY (start_id, target_id)
+        region TEXT NOT NULL,
+        PRIMARY KEY (start_id, target_id, region)
     )
     ''')
     
-    cursor.execute('CREATE INDEX idx_difficulty ON actor_connections(difficulty)')
+    cursor.execute('CREATE INDEX idx_difficulty_region ON actor_connections(difficulty, region)')
     cursor.execute('CREATE INDEX idx_connection_length ON actor_connections(connection_length)')
     
     for difficulty, paths in paths_by_difficulty.items():
-        for path_data in tqdm(paths, desc=f"Inserting {difficulty} paths"):
+        for path_data in tqdm(paths, desc=f"Inserting {difficulty} paths for {region}"):
             compressed_path = compress_path(path_data['path'])
             cursor.execute(
-                'INSERT INTO actor_connections VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO actor_connections VALUES (?, ?, ?, ?, ?, ?)',
                 (
                     path_data['start_id'],
                     path_data['target_id'],
                     path_data['connection_length'],
                     compressed_path,
-                    difficulty
+                    difficulty,
+                    region
                 )
             )
     conn.commit()
@@ -413,20 +417,14 @@ def create_connection_database(paths_by_difficulty):
     print(f"Connection database created at {connection_path}")
 
 def main():
-    start_time = time.time()
-    
-    all_actors = {}
+    # For each region, generate appropriate connections
     for region in REGIONS_TO_PROCESS:
         region_actors = load_actor_data(region)
         if region_actors:
-            all_actors.update(region_actors)
-    
-    graph = build_actor_graph(all_actors)
-    paths = find_paths_by_difficulty(graph, all_actors, DIFFICULTY_CONFIG)
-    create_connection_database(paths)
-    
-    elapsed_time = time.time() - start_time
-    print(f"Process completed in {elapsed_time:.2f} seconds")
+            graph = build_actor_graph(region_actors)
+            paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
+            # Store with region information
+            create_connection_database(paths, region)
 
 if __name__ == "__main__":
     main()
