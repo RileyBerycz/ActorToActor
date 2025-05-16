@@ -663,15 +663,17 @@ def apply_migrations():
     """Apply migrations to D1 database"""
     print(f"Applying migrations to {D1_DATABASE_NAME}...")
     
-    # Get the directory containing wrangler.toml
-    wrangler_dir = "."  # Change this if wrangler.toml is in a subdirectory
+    # Ensure wrangler.toml exists
+    if not ensure_wrangler_toml():
+        print("Cannot apply migrations without wrangler.toml")
+        return False
     
+    # Rest of function remains the same
     result = subprocess.run(
         ["wrangler", "d1", "migrations", "apply", D1_DATABASE_NAME, "--remote"],
         capture_output=True,
         text=True,
-        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
-        cwd=wrangler_dir  # This ensures Wrangler runs in the directory with wrangler.toml
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
     )
     
     if result.returncode != 0:
@@ -680,6 +682,60 @@ def apply_migrations():
     else:
         print("Migrations applied successfully")
         return True
+
+def ensure_wrangler_toml():
+    """Create wrangler.toml file if it doesn't exist"""
+    wrangler_file = "wrangler.toml"
+    
+    if os.path.exists(wrangler_file):
+        print(f"{wrangler_file} already exists")
+        return True
+    
+    print(f"Creating {wrangler_file}...")
+    
+    # Get database ID
+    result = subprocess.run(
+        ["wrangler", "d1", "list", "--json"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error listing databases: {result.stderr}")
+        return False
+    
+    try:
+        import json
+        databases = json.loads(result.stdout)
+        db_id = None
+        
+        for db in databases:
+            if db.get('name') == D1_DATABASE_NAME:
+                db_id = db.get('uuid')
+                break
+        
+        if not db_id:
+            print(f"Database {D1_DATABASE_NAME} not found")
+            return False
+            
+        # Create wrangler.toml
+        with open(wrangler_file, 'w') as f:
+            f.write(f"""name = "actor-to-actor-api"
+
+# D1 database configuration
+[[d1_databases]]
+binding = "DB"
+database_name = "{D1_DATABASE_NAME}"
+database_id = "{db_id}"
+""")
+        
+        print(f"Created {wrangler_file} with database ID {db_id}")
+        return True
+    
+    except Exception as e:
+        print(f"Error creating {wrangler_file}: {str(e)}")
+        return False
 
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
