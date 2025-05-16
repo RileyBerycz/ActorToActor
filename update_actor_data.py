@@ -53,7 +53,7 @@ POSTER_SIZE = "w342"
 # =============================================================================
 # Get configurable page limit from environment variable with default and hard cap
 # Hard cap is set to 200000 based on TMDB API limitations (reported 202017 but 400 error)
-MAX_POSSIBLE_PAGES = 200000
+MAX_POSSIBLE_PAGES = 500
 DEFAULT_PAGES_FILE = "actor-game/public/default_pages.txt"
 
 # Try to load custom default from file
@@ -62,7 +62,7 @@ try:
         DEFAULT_PAGES = int(f.read().strip())
         print(f"Using saved default page count: {DEFAULT_PAGES}")
 except (FileNotFoundError, ValueError):
-    DEFAULT_PAGES = 1000
+    DEFAULT_PAGES = 500
     print(f"Using built-in default page count: {DEFAULT_PAGES}")
 
 # Get user-specified value for current run

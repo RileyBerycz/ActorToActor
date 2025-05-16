@@ -13,7 +13,7 @@ from datetime import datetime
 # Constants
 REGIONS = ['GLOBAL', 'US', 'UK', 'CA', 'AU', 'FR', 'DE', 'IN', 'KR', 'JP', 'CN']
 CONNECTION_DB_PATH = 'actor-game/public/actor_connections.db'  # Updated path
-REGIONS_TO_PROCESS = ['GLOBAL', 'US', 'UK']  # Prioritize these regions for connections
+REGIONS_TO_PROCESS = ['GLOBAL', 'US', 'UK', 'CA', 'AU', 'FR', 'DE', 'IN', 'KR', 'JP', 'CN']  # Prioritize these regions for connections
 
 # Difficulty settings
 DIFFICULTY_CONFIG = {
@@ -366,36 +366,41 @@ def compress_path(path):
     return gzip.compress(json_str.encode('utf-8'))
 
 def create_connection_database(paths_by_difficulty, region="GLOBAL"):
-    """Create SQLite database with actor connections"""
-    print(f"Creating connection database for region {region}...")
+    """Create/update SQLite database with actor connections"""
+    print(f"Adding {region} connections to database...")
     
     # Always use the standard path and ensure the directory exists
     os.makedirs(os.path.dirname(CONNECTION_DB_PATH), exist_ok=True)
     connection_path = CONNECTION_DB_PATH
     
-    # Delete the existing database to create a fresh one with the new schema
-    if os.path.exists(connection_path):
-        os.remove(connection_path)
-        print(f"Removed existing database at {connection_path}")
+    # Check if database exists
+    db_exists = os.path.exists(connection_path)
     
     conn = sqlite3.connect(connection_path)
     cursor = conn.cursor()
     
-    # Create the tables with the new schema
-    cursor.execute('''
-    CREATE TABLE actor_connections (
-        start_id TEXT NOT NULL,
-        target_id TEXT NOT NULL,
-        connection_length INTEGER NOT NULL,
-        optimal_path BLOB NOT NULL,
-        difficulty TEXT NOT NULL,
-        region TEXT NOT NULL,
-        PRIMARY KEY (start_id, target_id, region)
-    )
-    ''')
-    
-    cursor.execute('CREATE INDEX idx_difficulty_region ON actor_connections(difficulty, region)')
-    cursor.execute('CREATE INDEX idx_connection_length ON actor_connections(connection_length)')
+    # Create the tables if they don't exist
+    if not db_exists:
+        print(f"Creating new connection database at {connection_path}")
+        cursor.execute('''
+        CREATE TABLE actor_connections (
+            start_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            connection_length INTEGER NOT NULL,
+            optimal_path BLOB NOT NULL,
+            difficulty TEXT NOT NULL,
+            region TEXT NOT NULL,
+            PRIMARY KEY (start_id, target_id, region)
+        )
+        ''')
+        
+        cursor.execute('CREATE INDEX idx_difficulty_region ON actor_connections(difficulty, region)')
+        cursor.execute('CREATE INDEX idx_connection_length ON actor_connections(connection_length)')
+    else:
+        print(f"Appending to existing database at {connection_path}")
+        # Remove previous entries for this region to allow regeneration
+        cursor.execute('DELETE FROM actor_connections WHERE region = ?', (region,))
+        print(f"Removed previous {region} connections")
     
     for difficulty, paths in paths_by_difficulty.items():
         for path_data in tqdm(paths, desc=f"Inserting {difficulty} paths for {region}"):
@@ -414,7 +419,7 @@ def create_connection_database(paths_by_difficulty, region="GLOBAL"):
     conn.commit()
     conn.close()
     
-    print(f"Connection database created at {connection_path}")
+    print(f"Connection database updated with {region} paths")
 
 def main():
     # For each region, generate appropriate connections
@@ -422,7 +427,18 @@ def main():
         region_actors = load_actor_data(region)
         if region_actors:
             graph = build_actor_graph(region_actors)
-            paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
+            
+            # Only generate hard paths for GLOBAL region
+            if region == 'GLOBAL':
+                paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
+            else:
+                # For non-GLOBAL regions, only generate easy and normal paths
+                easy_normal_config = {k: v for k, v in DIFFICULTY_CONFIG.items() 
+                                     if k in ['easy', 'normal']}
+                paths = find_paths_by_difficulty(graph, region_actors, easy_normal_config)
+                # Add empty list for hard to maintain structure
+                paths['hard'] = []
+                
             # Store with region information
             create_connection_database(paths, region)
 

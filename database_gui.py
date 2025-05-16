@@ -1849,3 +1849,15 @@ class ActorToActorApp:
         except Exception as e:
             print(f"Error verifying connection: {str(e)}")
             return False
+        
+def main():
+    root = tk.Tk()
+    app = ActorToActorApp(root)
+    root.mainloop() 
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        traceback.print_exc()
+        messagebox.showerror("Startup Error", f"Error starting application: {str(e)}")

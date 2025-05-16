@@ -13,7 +13,8 @@ function GameControls({
   startActor,
   targetActor,
   onSelection,
-  onComplete
+  onComplete,
+  fetchActorCredits // Add this new prop
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -71,11 +72,23 @@ function GameControls({
     }
   }, [startActor, targetActor, actorData]);
 
-  // Handle search input change
-  const handleSearch = (query) => {
+  // Add this function to fetch actor credits when needed
+  const getActorCreditsIfNeeded = async (actorId) => {
+    if (!actorData[actorId]?.movie_credits) {
+      // If we don't have this actor's credits yet, fetch them
+      if (fetchActorCredits) {
+        const updatedActor = await fetchActorCredits(actorId);
+        return updatedActor;
+      }
+    }
+    return actorData[actorId];
+  };
+
+  // Update the handleSearch function to use fetchActorCredits
+  const handleSearch = async (query) => {
     setSearchQuery(query);
     
-    if (!query.trim() || !actorData) {
+    if (!query.trim()) {
       setSearchResults([]);
       return;
     }
@@ -93,39 +106,45 @@ function GameControls({
         return;
       }
       
-      // Find all actors who appeared in this movie
-      const matchingActors = Object.entries(actorData)
-        .filter(([actorId, actor]) => {
-          // Check if actor was in this movie
-          const wasInMovie = actor.movie_credits.some(credit => 
-            credit.id === lastMovie.id
-          ) || (settings.difficulty === 'hard' && actor.tv_credits ? 
-            actor.tv_credits.some(credit => credit.id === lastMovie.id) : false);
-          
-          // Include the target actor if they were in this movie!
-          const isTargetActor = targetActor && actorId === targetActor.id && wasInMovie;
-          
-          // Don't show actors already in the path EXCEPT the target actor if valid
-          const alreadyInPath = path.some(item => 
-            item.type === 'actor' && item.id === actorId && !isTargetActor
-          );
-          
-          // Match name to query
-          const nameMatches = actor.name.toLowerCase().includes(lowerQuery);
-          
-          return wasInMovie && !alreadyInPath && nameMatches;
-        })
-        .map(([id, actor]) => ({
-          id,
-          type: 'actor',
-          name: actor.name || 'Unknown Actor',
-          profile_path: actor.profile_path,
-          popularity: actor.popularity || 0
-        }))
-        .sort((a, b) => b.popularity - a.popularity)
-        .slice(0, 10);
-      
-      setSearchResults(matchingActors);
+      // UPDATED: Try to get movie credits from API if needed
+      try {
+        // Find all actors who appeared in this movie
+        const matchingActors = Object.entries(actorData)
+          .filter(([actorId, actor]) => {
+            // Check if actor was in this movie
+            const wasInMovie = actor.movie_credits.some(credit => 
+              credit.id === lastMovie.id
+            ) || (settings.difficulty === 'hard' && actor.tv_credits ? 
+              actor.tv_credits.some(credit => credit.id === lastMovie.id) : false);
+            
+            // Include the target actor if they were in this movie!
+            const isTargetActor = targetActor && actorId === targetActor.id && wasInMovie;
+            
+            // Don't show actors already in the path EXCEPT the target actor if valid
+            const alreadyInPath = path.some(item => 
+              item.type === 'actor' && item.id === actorId && !isTargetActor
+            );
+            
+            // Match name to query
+            const nameMatches = actor.name.toLowerCase().includes(lowerQuery);
+            
+            return wasInMovie && !alreadyInPath && nameMatches;
+          })
+          .map(([id, actor]) => ({
+            id,
+            type: 'actor',
+            name: actor.name || 'Unknown Actor',
+            profile_path: actor.profile_path,
+            popularity: actor.popularity || 0
+          }))
+          .sort((a, b) => b.popularity - a.popularity)
+          .slice(0, 10);
+        
+        setSearchResults(matchingActors);
+      } catch (error) {
+        console.error("Error fetching actor credits:", error);
+        setSearchResults([]);
+      }
     } else {
       // Logic for searching movies/shows based on difficulty
       const lastActor = path.length > 0 ? path[path.length - 1] : startActor;
@@ -133,7 +152,10 @@ function GameControls({
         return;
       }
       
-      const actor = actorData[lastActor.id || startActor.id];
+      const actorId = lastActor.id || startActor.id;
+      
+      // Fetch credits if not available
+      const actor = await getActorCreditsIfNeeded(actorId);
       if (!actor) return;
       
       // Get movies only for easy/normal mode, include TV for hard mode
