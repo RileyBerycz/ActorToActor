@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sqlite3
 import subprocess
@@ -74,8 +75,10 @@ def extract_table(conn, table_name, output_file):
                                 hex_data = val.hex()
                                 formatted_values.append(f"X'{hex_data}'")
                             else:
-                                # Escape single quotes in text
-                                formatted_values.append(f"'{str(val).replace('\'', '\'\'')}'")
+                                # FIX: Use double quotes outside and single quotes inside
+                                # This avoids the f-string backslash escape issue
+                                escaped_val = str(val).replace("'", "''")
+                                formatted_values.append(f"'{escaped_val}'")
                         
                         values_list.append(f"({', '.join(formatted_values)})")
                     
@@ -141,8 +144,10 @@ def sync_database():
             file_path = os.path.join(sql_dir, sql_file)
             print(f"Executing {sql_file}...")
             
+            # Add timeout parameter for large files
             result = subprocess.run(
-                ["npx", "wrangler", "d1", "execute", D1_DATABASE_NAME, "--remote", f"--file={file_path}"],
+                ["npx", "wrangler", "d1", "execute", D1_DATABASE_NAME, "--remote", 
+                 "--json=false", "--command-timeout=300", f"--file={file_path}"],
                 capture_output=True,
                 text=True
             )
