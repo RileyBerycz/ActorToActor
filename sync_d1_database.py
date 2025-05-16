@@ -660,6 +660,9 @@ def generate_migrations():
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
+    # Force non-interactive mode for CI environments
+    os.environ["CI"] = "true"
+    
     # Verify environment first
     if not verify_environment():
         print("Environment verification failed. Exiting.")
@@ -668,11 +671,24 @@ if __name__ == "__main__":
     # Ensure latest wrangler is installed
     ensure_latest_wrangler()
     
-    # Create the database if it doesn't exist
-    create_d1_database_if_not_exists()
-    
-    # Clear existing tables instead of recreating the database
-    clear_tables_in_database()
-    
-    # Run the sync
-    sync_database()
+    # Parse command line arguments
+    import sys
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "generate-migrations":
+            # Generate migration files
+            generate_migrations()
+        elif sys.argv[1] == "apply-migrations":
+            # Apply existing migrations
+            subprocess.run(
+                ["wrangler", "d1", "migrations", "apply", D1_DATABASE_NAME, "--remote"],
+                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+            )
+        else:
+            print(f"Unknown command: {sys.argv[1]}")
+            print("Available commands: generate-migrations, apply-migrations")
+            exit(1)
+    else:
+        # Default behavior: sync database directly
+        create_d1_database_if_not_exists()
+        clear_tables_in_database()
+        sync_database()

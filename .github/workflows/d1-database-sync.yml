@@ -1,7 +1,7 @@
 name: Sync D1 Database
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger
   push:
     paths:
       - 'actor-game/public/*.db'
@@ -15,7 +15,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'  # This is the key change - using Node.js v20
+          node-version: '20'  # Required by Wrangler 4.x
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,7 +27,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
       
-      - name: Run database sync script
+      # Migration-based approach (recommended)
+      - name: Generate migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python sync_d1_database.py
+        run: python sync_d1_database.py generate-migrations
+      
+      - name: Apply migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python sync_d1_database.py apply-migrations
