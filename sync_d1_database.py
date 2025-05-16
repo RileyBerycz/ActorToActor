@@ -659,6 +659,28 @@ def generate_migrations():
         # Clean up temp directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+def apply_migrations():
+    """Apply migrations to D1 database"""
+    print(f"Applying migrations to {D1_DATABASE_NAME}...")
+    
+    # Get the directory containing wrangler.toml
+    wrangler_dir = "."  # Change this if wrangler.toml is in a subdirectory
+    
+    result = subprocess.run(
+        ["wrangler", "d1", "migrations", "apply", D1_DATABASE_NAME, "--remote"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
+        cwd=wrangler_dir  # This ensures Wrangler runs in the directory with wrangler.toml
+    )
+    
+    if result.returncode != 0:
+        print(f"Error applying migrations: {result.stderr}")
+        return False
+    else:
+        print("Migrations applied successfully")
+        return True
+
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
     os.environ["CI"] = "true"
@@ -679,10 +701,7 @@ if __name__ == "__main__":
             generate_migrations()
         elif sys.argv[1] == "apply-migrations":
             # Apply existing migrations
-            subprocess.run(
-                ["wrangler", "d1", "migrations", "apply", D1_DATABASE_NAME, "--remote"],
-                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
-            )
+            apply_migrations()
         else:
             print(f"Unknown command: {sys.argv[1]}")
             print("Available commands: generate-migrations, apply-migrations")
