@@ -339,7 +339,6 @@ def reset_d1_database():
         
         print(f"Database {D1_DATABASE_NAME} reset successfully")
         return True
-    
     except Exception as e:
         print(f"Error resetting database: {str(e)}")
         raise
@@ -702,10 +701,7 @@ def apply_migrations():
         print("Cannot apply migrations without wrangler.toml")
         return False
     
-    # First fix the migration files
-    fix_migration_files()
-    
-    # Now try to apply migrations
+    # Try to apply migrations
     max_retries = 3
     for attempt in range(max_retries):
         result = subprocess.run(
@@ -744,6 +740,10 @@ def apply_migrations():
         if attempt < max_retries - 1:
             print(f"Retrying in 5 seconds...")
             time.sleep(5)
+    
+    # Process problematic tables directly
+    print("Processing problematic tables directly...")
+    process_problem_tables()
     
     # If we get here, all attempts failed but we want to continue
     print("Migration completed with some errors - database may be partially updated")
@@ -984,59 +984,70 @@ def fix_schema_mismatches(migration_files_dir="migrations"):
     return True
 
 def get_d1_schema():
-    """Get the current schema from D1 database"""
+    """Get the current schema from D1 database using a more direct approach"""
     print("Fetching current D1 database schema...")
     
+    # First get list of tables
     result = subprocess.run(
         ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-         "--command", "SELECT name, sql FROM sqlite_master WHERE type='table'", "--remote", "--json"],
+         "--command", "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", 
+         "--remote", "--json"],
         capture_output=True,
         text=True,
         env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
     )
     
     if result.returncode != 0:
-        print(f"Error getting schema: {result.stderr}")
+        print(f"Error getting tables: {result.stderr}")
         return {}
     
     d1_tables = {}
     try:
         import json
-        
         data = json.loads(result.stdout)
-        rows = data.get('results', [{}])[0].get('rows', [])
         
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-                
-            table_name = row.get('name')
-            if not table_name:
-                continue
-            
-            # Get columns directly with another query
+        # Debug the JSON structure
+        print(f"Response structure: {list(data.keys())}")
+        
+        table_names = []
+        if 'results' in data and data['results'] and 'rows' in data['results'][0]:
+            for row in data['results'][0]['rows']:
+                if isinstance(row, dict) and 'name' in row:
+                    table_names.append(row['name'])
+        
+        print(f"Found tables: {table_names}")
+        
+        # For each table, get its columns
+        for table_name in table_names:
+            # Get columns with PRAGMA
             col_result = subprocess.run(
                 ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-                 f"--command", f"PRAGMA table_info({table_name})", "--remote", "--json"],
+                 "--command", f"PRAGMA table_info({table_name})", 
+                 "--remote", "--json"],
                 capture_output=True,
                 text=True,
                 env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
             )
             
-            if col_result.returncode == 0:
-                col_data = json.loads(col_result.stdout)
-                col_rows = col_data.get('results', [{}])[0].get('rows', [])
+            if col_result.returncode != 0:
+                print(f"Error getting columns for {table_name}: {col_result.stderr}")
+                continue
                 
+            try:
+                col_data = json.loads(col_result.stdout)
                 columns = []
-                for col_row in col_rows:
-                    if isinstance(col_row, dict) and 'name' in col_row:
-                        columns.append(col_row['name'])
+                
+                if 'results' in col_data and col_data['results'] and 'rows' in col_data['results'][0]:
+                    for col_row in col_data['results'][0]['rows']:
+                        if isinstance(col_row, dict) and 'name' in col_row:
+                            columns.append(col_row['name'])
                 
                 d1_tables[table_name] = columns
-                print(f"Table {table_name} has columns: {columns}")
+                print(f"Table {table_name} columns: {columns}")
+            except Exception as e:
+                print(f"Error parsing columns for {table_name}: {str(e)}")
         
         return d1_tables
-        
     except Exception as e:
         print(f"Error parsing schema: {str(e)}")
         return {}
@@ -1218,6 +1229,122 @@ def direct_sql_execution_fallback():
     
     return True
 
+def process_problem_tables():
+    """Process tables that consistently fail in migrations"""
+    problem_tables = ["tv_credits", "movie_credits"]
+    
+    print(f"Directly processing problematic tables: {problem_tables}")
+    
+    # Get existing schema
+    d1_schema = get_d1_schema()
+    
+    # Download the source databases
+    temp_dir = tempfile.mkdtemp()
+    try:
+        db_path = download_database(DATABASE_URLS['actors'], os.path.join(temp_dir, "actors.db"))
+        
+        # Connect to source database
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        
+        for table in problem_tables:
+            print(f"Processing {table}...")
+            
+            # Check if table exists in D1
+            if table not in d1_schema:
+                print(f"Table {table} doesn't exist in D1, creating it...")
+                
+                # Get CREATE TABLE statement from source
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'")
+                create_sql = cursor.fetchone()[0]
+                
+                # Create the table in D1
+                create_result = subprocess.run(
+                    ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                     "--command", create_sql, "--remote"],
+                    capture_output=True,
+                    text=True,
+                    env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+                )
+                
+                if create_result.returncode != 0:
+                    print(f"Error creating table {table}: {create_result.stderr}")
+                    continue
+                
+                # Refresh schema
+                d1_schema = get_d1_schema()
+            
+            # Get valid columns
+            valid_columns = d1_schema.get(table, [])
+            if not valid_columns:
+                print(f"No valid columns found for {table}")
+                continue
+            
+            # Get source columns
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA table_info({table})")
+            source_columns = [row['name'] for row in cursor.fetchall()]
+            
+            # Find common columns
+            common_columns = [col for col in source_columns if col in valid_columns]
+            print(f"Using columns: {common_columns}")
+            
+            # Insert data in small batches
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            total_rows = cursor.fetchone()[0]
+            
+            batch_size = 2  # Very small batches
+            for offset in range(0, total_rows, batch_size):
+                cursor.execute(f"SELECT * FROM {table} LIMIT {batch_size} OFFSET {offset}")
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    # Create INSERT with only valid columns
+                    values = []
+                    cols = []
+                    
+                    for col in common_columns:
+                        cols.append(f"`{col}`")
+                        val = row[col]
+                        
+                        if val is None:
+                            values.append("NULL")
+                        elif isinstance(val, (int, float)):
+                            values.append(str(val))
+                        elif isinstance(val, bytes):
+                            hex_data = val.hex()
+                            values.append(f"X'{hex_data}'")
+                        else:
+                            escaped_val = str(val).replace("'", "''")
+                            values.append(f"'{escaped_val}'")
+                    
+                    # Skip if no valid columns
+                    if not cols:
+                        continue
+                        
+                    insert_sql = f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({', '.join(values)});"
+                    
+                    insert_result = subprocess.run(
+                        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                         "--command", insert_sql, "--remote"],
+                        capture_output=True,
+                        text=True,
+                        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+                    )
+                    
+                    if insert_result.returncode != 0 and "UNIQUE constraint" not in insert_result.stderr:
+                        print(f"Error inserting row: {insert_result.stderr}")
+                
+                print(f"Processed {min(offset + batch_size, total_rows)}/{total_rows} rows")
+            
+            print(f"Completed processing {table}")
+        
+        print("Direct processing of problem tables complete")
+        return True
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
     os.environ["CI"] = "true"
@@ -1236,12 +1363,7 @@ if __name__ == "__main__":
             if not verify_environment():
                 exit(1)
             ensure_latest_wrangler()
-            
-            success = apply_migrations()
-            
-            # If migrations had errors, try direct SQL as fallback
-            if not success:
-                direct_sql_execution_fallback()
+            apply_migrations()
         else:
             print(f"Unknown command: {sys.argv[1]}")
             print("Available commands: generate-migrations, apply-migrations")
