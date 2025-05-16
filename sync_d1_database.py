@@ -446,6 +446,54 @@ def verify_environment():
     print("Environment verification complete.")
     return True
 
+def clear_tables_in_database():
+    """Clear all tables in the database instead of recreating it"""
+    print(f"Clearing tables in D1 database '{D1_DATABASE_NAME}'...")
+    
+    # Get list of tables in the database
+    list_tables_cmd = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+    
+    result = subprocess.run(
+        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+         "--command", list_tables_cmd, "--remote", "--json"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error listing tables: {result.stderr}")
+        print("Continuing with upload anyway...")
+        return
+    
+    try:
+        import json
+        result_json = json.loads(result.stdout)
+        if 'results' in result_json:
+            tables = [row['name'] for row in result_json['results'][0]['rows']]
+            print(f"Found tables: {tables}")
+            
+            # Delete data from each table
+            for table in tables:
+                print(f"Clearing table {table}...")
+                delete_cmd = f"DELETE FROM {table};"
+                
+                del_result = subprocess.run(
+                    ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                     "--command", delete_cmd, "--remote"],
+                    capture_output=True,
+                    text=True,
+                    env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+                )
+                
+                if del_result.returncode != 0:
+                    print(f"Warning: Could not clear table {table}: {del_result.stderr}")
+                else:
+                    print(f"Table {table} cleared successfully")
+    except Exception as e:
+        print(f"Warning: Error clearing tables: {str(e)}")
+        print("Continuing with upload anyway...")
+
 if __name__ == "__main__":
     # Verify environment first
     if not verify_environment():
@@ -455,8 +503,11 @@ if __name__ == "__main__":
     # Ensure latest wrangler is installed
     ensure_latest_wrangler()
     
-    # Reset the database completely - this is a clean approach
-    reset_d1_database()
+    # Create the database if it doesn't exist
+    create_d1_database_if_not_exists()
+    
+    # Clear existing tables instead of recreating the database
+    clear_tables_in_database()
     
     # Run the sync
     sync_database()
