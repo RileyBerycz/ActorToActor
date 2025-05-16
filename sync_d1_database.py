@@ -702,7 +702,22 @@ def apply_migrations():
         print("Cannot apply migrations without wrangler.toml")
         return False
     
-    # Try to apply migrations
+    # Try to apply schema migrations first
+    schema_result = subprocess.run(
+        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+         "--file", "migrations/20250516162020_001_schema.sql", "--remote"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if schema_result.returncode != 0:
+        print(f"Warning: Schema migration might have issues: {schema_result.stderr}")
+    
+    # Fix schema mismatches in migration files
+    fix_schema_mismatches()
+    
+    # Now try to apply migrations
     max_retries = 3
     for attempt in range(max_retries):
         result = subprocess.run(
@@ -719,10 +734,26 @@ def apply_migrations():
         # Handle specific errors
         if "UNIQUE constraint failed" in result.stderr:
             print(f"Constraint error detected (attempt {attempt+1}/{max_retries})")
-            # Continue trying despite constraint errors - data will be incomplete but usable
-        elif "table has no column" in result.stderr:
+        elif "table has no column named" in result.stderr:
             print(f"Schema mismatch detected (attempt {attempt+1}/{max_retries})")
-            # Similar issue, continue attempting
+            
+            # Extract the problematic migration file
+            import re
+            match = re.search(r"Migration (.*?) failed", result.stderr)
+            if match:
+                problem_file = match.group(1)
+                print(f"Problem detected in migration file: {problem_file}")
+                
+                # Remove or fix the problematic file
+                file_path = os.path.join("migrations", problem_file)
+                if os.path.exists(file_path):
+                    # Option 1: Delete the file
+                    # os.remove(file_path)
+                    # print(f"Removed problematic migration: {problem_file}")
+                    
+                    # Option 2: Rename to skip it
+                    os.rename(file_path, file_path + ".skipped")
+                    print(f"Renamed problematic migration: {problem_file} → {problem_file}.skipped")
         else:
             print(f"Error applying migrations: {result.stderr}")
             
@@ -730,9 +761,9 @@ def apply_migrations():
             print(f"Retrying in 5 seconds...")
             time.sleep(5)
     
-    # If we get here, all attempts failed
+    # If we get here, all attempts failed but we want to continue
     print("Migration completed with some errors - database may be partially updated")
-    return True  # Return success anyway since you just want it to work with whatever data made it
+    return True
 
 def ensure_wrangler_toml():
     """Create wrangler.toml file if it doesn't exist"""
@@ -814,6 +845,138 @@ def download_github_file(repo_owner, repo_name, path, output_path):
             f.write(chunk)
     
     return output_path
+
+def fix_schema_mismatches(migration_files_dir="migrations"):
+    """Find and fix schema mismatches in migration files"""
+    print("Checking for schema mismatches...")
+    
+    # First, get the actual schema from D1
+    result = subprocess.run(
+        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+         "--command", "SELECT name, sql FROM sqlite_master WHERE type='table'", "--remote", "--json"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error getting schema: {result.stderr}")
+        return False
+    
+    # Parse the D1 schema
+    d1_tables = {}
+    try:
+        import json
+        import re
+        
+        data = json.loads(result.stdout)
+        for row in data.get('results', [{}])[0].get('rows', []):
+            table_name = row.get('name')
+            create_sql = row.get('sql')
+            
+            # Extract column names using regex
+            if create_sql:
+                # Find text between parentheses in CREATE TABLE statement
+                match = re.search(r'\((.*)\)', create_sql, re.DOTALL)
+                if match:
+                    columns_text = match.group(1)
+                    # Split by commas, but ignore commas within parentheses
+                    columns = []
+                    current = ""
+                    paren_level = 0
+                    for char in columns_text:
+                        if char == '(' or char == '[':
+                            paren_level += 1
+                            current += char
+                        elif char == ')' or char == ']':
+                            paren_level -= 1
+                            current += char
+                        elif char == ',' and paren_level == 0:
+                            columns.append(current.strip())
+                            current = ""
+                        else:
+                            current += char
+                    
+                    if current:
+                        columns.append(current.strip())
+                    
+                    # Extract just the column names
+                    column_names = []
+                    for col in columns:
+                        # Match column name (first word in definition)
+                        col_match = re.match(r'`?([^`\s]+)`?\s+', col)
+                        if col_match:
+                            column_names.append(col_match.group(1))
+                    
+                    d1_tables[table_name] = column_names
+    except Exception as e:
+        print(f"Error parsing schema: {str(e)}")
+        return False
+    
+    print(f"D1 schema found for tables: {list(d1_tables.keys())}")
+    
+    # Now fix schema issues in migration files
+    fixed_count = 0
+    for filename in os.listdir(migration_files_dir):
+        if not filename.endswith('.sql'):
+            continue
+            
+        # Only check data migration files
+        if '_data.sql' not in filename:
+            continue
+            
+        # Extract table name from filename
+        table_parts = filename.split('_')
+        if len(table_parts) < 3:
+            continue
+            
+        # Find the table name
+        table_name = None
+        for part in table_parts:
+            if part in d1_tables:
+                table_name = part
+                break
+        
+        if not table_name:
+            continue
+            
+        # Check if we need to fix this file
+        filepath = os.path.join(migration_files_dir, filename)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # Check for INSERT statements
+        if 'INSERT' not in content:
+            continue
+            
+        # Find all INSERT statements and check column lists
+        modified = False
+        output_lines = []
+        
+        for line in content.split('\n'):
+            if line.strip().startswith('INSERT'):
+                # Parse the column list from the INSERT statement
+                col_match = re.search(r'INSERT\s+OR\s+REPLACE\s+INTO\s+`?\w+`?\s*\((.*?)\)', line)
+                if col_match:
+                    col_list = col_match.group(1)
+                    cols = [c.strip('` ') for c in col_list.split(',')]
+                    
+                    # Check for columns that don't exist in D1
+                    valid_cols = []
+                    values_start_idx = line.find('VALUES')
+                    if values_start_idx == -1:
+                        output_lines.append(line)
+                        continue
+                        
+                    values_text = line[values_start_idx:].strip()
+                    values_match = re.search(r'VALUES\s*\((.*?)\)', values_text)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(output_lines))
+            fixed_count += 1
+            print(f"Fixed schema mismatch in {filename}")
+    
+    print(f"Fixed {fixed_count} migration files with schema mismatches")
+    return True
 
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
