@@ -30,7 +30,7 @@ def download_database(url, output_path):
     print(f"Database downloaded to {output_path}")
     return output_path
 
-def extract_table(conn, table_name, output_file):
+def extract_table(conn, table_name, output_file, batch_size=100):  # Reduced batch size
     """Extract table schema and data to SQL file"""
     print(f"Extracting {table_name}...")
     cursor = conn.cursor()
@@ -140,49 +140,31 @@ def sync_database():
         
         # Upload to D1 using wrangler
         print("\nUploading to D1...")
+        priority_tables = ['actors', 'actor_connections']  # Tables to process first
+        remaining_tables = []
+
         for sql_file in os.listdir(sql_dir):
+            # Add priority tables to the front of the queue
             file_path = os.path.join(sql_dir, sql_file)
-            file_size = os.path.getsize(file_path) / (1024 * 1024)  # Size in MB
-            
-            # If the file is large, split it
-            if file_size > 5:  # 5MB as a threshold
-                print(f"{sql_file} is {file_size:.2f}MB, splitting into smaller files...")
-                split_files = split_sql_file(file_path)
-                files_to_process = split_files
-            else:
-                files_to_process = [file_path]
-            
-            # Process each file (original or split)
-            for process_file in files_to_process:
-                file_name = os.path.basename(process_file)
-                print(f"Executing {file_name}...")
-                
-                # Add better error handling and debugging
+            if any(table in sql_file for table in priority_tables):
                 try:
-                    # Add timeout to the command
-                    result = subprocess.run(
-                        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-                         "--file", process_file, "--remote"],
-                        capture_output=True,
-                        text=True,
-                        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
-                        timeout=300  # 5 minute timeout
-                    )
-                    
-                    if result.returncode != 0:
-                        print(f"Error executing {file_name}:")
-                        print(f"STDERR: {result.stderr}")
-                        print(f"STDOUT: {result.stdout}")
-                        raise Exception(f"D1 upload failed for {file_name}")
-                    else:
-                        print(f"Successfully executed {file_name}")
-                        
-                except subprocess.TimeoutExpired:
-                    print(f"Command timed out when executing {file_name}")
-                    raise Exception(f"D1 upload timed out for {file_name}")
+                    print(f"Processing priority table: {sql_file}")
+                    execute_sql_in_batches(file_path)
                 except Exception as e:
-                    print(f"Exception when executing {file_name}: {str(e)}")
-                    raise
+                    print(f"Error processing priority table {sql_file}: {str(e)}")
+                    # Continue with other tables
+            else:
+                remaining_tables.append(sql_file)
+
+        # Process remaining tables
+        for sql_file in remaining_tables:
+            try:
+                file_path = os.path.join(sql_dir, sql_file)
+                print(f"Processing table: {sql_file}")
+                execute_sql_in_batches(file_path)
+            except Exception as e:
+                print(f"Error processing table {sql_file}: {str(e)}")
+                # Continue with other tables
         
         print(f"\nSync completed in {time.time() - start_time:.2f} seconds")
         
@@ -260,6 +242,71 @@ def create_d1_database_if_not_exists():
     else:
         print(f"D1 database '{D1_DATABASE_NAME}' already exists")
 
+def reset_d1_database():
+    """Reset the D1 database to clean state"""
+    print(f"Resetting D1 database '{D1_DATABASE_NAME}'...")
+    
+    # Start with a fresh database by deleting and recreating it
+    # List the database to get its ID
+    result = subprocess.run(
+        ["wrangler", "d1", "list", "--json"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error listing D1 databases: {result.stderr}")
+        raise Exception("Failed to list D1 databases")
+    
+    # Try to parse the JSON output to get the database ID
+    try:
+        import json
+        databases = json.loads(result.stdout)
+        db_id = None
+        for db in databases:
+            if db.get('name') == D1_DATABASE_NAME:
+                db_id = db.get('uuid')
+                break
+        
+        if not db_id:
+            print(f"Database {D1_DATABASE_NAME} not found")
+            return False
+        
+        # Delete the database
+        print(f"Deleting database {D1_DATABASE_NAME} (ID: {db_id})...")
+        delete_result = subprocess.run(
+            ["wrangler", "d1", "delete", D1_DATABASE_NAME, "--yes"],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+        )
+        
+        if delete_result.returncode != 0:
+            print(f"Error deleting database: {delete_result.stderr}")
+            print(f"Output: {delete_result.stdout}")
+        
+        # Recreate the database
+        print(f"Creating new database {D1_DATABASE_NAME}...")
+        create_result = subprocess.run(
+            ["wrangler", "d1", "create", D1_DATABASE_NAME],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+        )
+        
+        if create_result.returncode != 0:
+            print(f"Error creating database: {create_result.stderr}")
+            print(f"Output: {create_result.stdout}")
+            raise Exception("Failed to recreate D1 database")
+        
+        print(f"Database {D1_DATABASE_NAME} reset successfully")
+        return True
+    
+    except Exception as e:
+        print(f"Error resetting database: {str(e)}")
+        raise
+
 def split_sql_file(file_path, max_statements=50):
     """Split a large SQL file into smaller files with fewer statements"""
     print(f"Splitting {file_path} into smaller files...")
@@ -318,6 +365,53 @@ def split_sql_file(file_path, max_statements=50):
     
     return output_files
 
+def execute_sql_in_batches(file_path, batch_size=5):
+    """Execute SQL file in small batches instead of all at once"""
+    print(f"Executing {file_path} in batches...")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        sql_content = f.read()
+    
+    # Split by semicolon to get individual SQL statements
+    statements = sql_content.split(';')
+    statements = [s.strip() for s in statements if s.strip()]
+    total_statements = len(statements)
+    
+    print(f"Found {total_statements} SQL statements to execute")
+    
+    # Execute in small batches
+    for i in range(0, total_statements, batch_size):
+        batch = statements[i:i+batch_size]
+        if not batch:
+            continue
+            
+        batch_sql = ';\n'.join(batch) + ';'
+        batch_file = f"{file_path}_batch_{i}.sql"
+        
+        with open(batch_file, 'w', encoding='utf-8') as f:
+            f.write(batch_sql)
+        
+        print(f"Executing batch {i//batch_size + 1}/{(total_statements + batch_size - 1)//batch_size}...")
+        
+        result = subprocess.run(
+            ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+             "--command", batch_sql, "--remote"],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
+            timeout=120  # 2 minute timeout
+        )
+        
+        if result.returncode != 0:
+            print(f"Error executing batch {i//batch_size + 1}:")
+            print(f"STDERR: {result.stderr}")
+            print(f"STDOUT: {result.stdout}")
+            
+            # Don't fail immediately, try to continue with next batch
+            print("Continuing with next batch...")
+        else:
+            print(f"Successfully executed batch {i//batch_size + 1}/{(total_statements + batch_size - 1)//batch_size}")
+
 def verify_environment():
     """Verify all required environment variables are set"""
     print("Verifying environment...")
@@ -361,8 +455,8 @@ if __name__ == "__main__":
     # Ensure latest wrangler is installed
     ensure_latest_wrangler()
     
-    # Create D1 database if it doesn't exist
-    create_d1_database_if_not_exists()
+    # Reset the database completely - this is a clean approach
+    reset_d1_database()
     
     # Run the sync
     sync_database()
