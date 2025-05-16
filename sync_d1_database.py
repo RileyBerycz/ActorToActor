@@ -57,7 +57,7 @@ def extract_table(conn, table_name, output_file, batch_size=100):  # Reduced bat
             column_names = [description[0] for description in cursor.description]
             
             # Generate INSERT statements in batches
-            batch_size = 500
+            batch_size = 10  # Only 10 rows per INSERT statement
             for i in range(0, len(rows), batch_size):
                 batch = rows[i:i+batch_size]
                 if batch:
@@ -365,7 +365,7 @@ def split_sql_file(file_path, max_statements=50):
     
     return output_files
 
-def execute_sql_in_batches(file_path, batch_size=5):
+def execute_sql_in_batches(file_path, batch_size=2):  # Even smaller batch size
     """Execute SQL file in small batches instead of all at once"""
     print(f"Executing {file_path} in batches...")
     
@@ -379,27 +379,36 @@ def execute_sql_in_batches(file_path, batch_size=5):
     
     print(f"Found {total_statements} SQL statements to execute")
     
+    # Create a temp directory for batch files
+    batch_dir = os.path.dirname(file_path)
+    base_name = os.path.basename(file_path)
+    
+    # Add a success counter
+    success_count = 0
+    
     # Execute in small batches
     for i in range(0, total_statements, batch_size):
         batch = statements[i:i+batch_size]
         if not batch:
             continue
             
+        # Create a temporary file for this batch
         batch_sql = ';\n'.join(batch) + ';'
-        batch_file = f"{file_path}_batch_{i}.sql"
+        batch_file = os.path.join(batch_dir, f"{base_name}_batch_{i}.sql")
         
         with open(batch_file, 'w', encoding='utf-8') as f:
             f.write(batch_sql)
         
         print(f"Executing batch {i//batch_size + 1}/{(total_statements + batch_size - 1)//batch_size}...")
         
+        # Use --file instead of --command for large SQL
         result = subprocess.run(
             ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-             "--command", batch_sql, "--remote"],
+             "--file", batch_file, "--remote"],
             capture_output=True,
             text=True,
             env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
-            timeout=120  # 2 minute timeout
+            timeout=120
         )
         
         if result.returncode != 0:
@@ -407,10 +416,35 @@ def execute_sql_in_batches(file_path, batch_size=5):
             print(f"STDERR: {result.stderr}")
             print(f"STDOUT: {result.stdout}")
             
-            # Don't fail immediately, try to continue with next batch
-            print("Continuing with next batch...")
+            # Try an even smaller batch as fallback
+            if batch_size > 1 and "argument list too long" in result.stderr.lower():
+                print("Command line too long, trying with smaller batches...")
+                for statement in batch:
+                    single_batch_file = os.path.join(batch_dir, f"{base_name}_single_{i}.sql")
+                    with open(single_batch_file, 'w', encoding='utf-8') as f:
+                        f.write(statement + ";")
+                        
+                    single_result = subprocess.run(
+                        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                         "--file", single_batch_file, "--remote"],
+                        capture_output=True,
+                        text=True,
+                        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
+                        timeout=120
+                    )
+                    
+                    if single_result.returncode != 0:
+                        print(f"Error executing single statement:")
+                        print(f"STDERR: {single_result.stderr}")
+                    else:
+                        print("Successfully executed single statement")
+            else:
+                # Don't fail immediately, try to continue with next batch
+                print("Continuing with next batch...")
         else:
+            success_count += len(batch)
             print(f"Successfully executed batch {i//batch_size + 1}/{(total_statements + batch_size - 1)//batch_size}")
+            print(f"Progress: {success_count}/{total_statements} statements executed")
 
 def verify_environment():
     """Verify all required environment variables are set"""
@@ -493,6 +527,137 @@ def clear_tables_in_database():
     except Exception as e:
         print(f"Warning: Error clearing tables: {str(e)}")
         print("Continuing with upload anyway...")
+
+def generate_migrations():
+    """Convert SQL files to Wrangler migrations"""
+    print("Generating D1 migrations from SQLite databases...")
+    
+    # Create temp directory for downloads
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        # Create migrations directory
+        os.makedirs("migrations", exist_ok=True)
+        
+        # Generate timestamp for migration version
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        
+        # Download databases
+        local_dbs = {}
+        for name, url in DATABASE_URLS.items():
+            output_path = os.path.join(temp_dir, f"{name}.db")
+            local_dbs[name] = download_database(url, output_path)
+        
+        # Create schema migrations
+        for db_name, db_path in local_dbs.items():
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get list of tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            # Create migration file for schema
+            schema_migration = f"migrations/{timestamp}_{db_name}_schema.sql"
+            with open(schema_migration, 'w', encoding='utf-8') as f:
+                for table in tables:
+                    cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'")
+                    create_sql = cursor.fetchone()[0]
+                    f.write(f"DROP TABLE IF EXISTS {table};\n")
+                    f.write(f"{create_sql};\n\n")
+            
+            print(f"Created schema migration for {db_name} database")
+            
+            # Create data migrations (smaller files for each table)
+            for table in tables:
+                # Get row count to decide if we need to split
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                row_count = cursor.fetchone()[0]
+                
+                if row_count == 0:
+                    continue  # Skip empty tables
+                
+                # For small tables (<100 rows), create a single migration
+                if row_count < 100:
+                    data_migration = f"migrations/{timestamp}_{db_name}_{table}_data.sql"
+                    with open(data_migration, 'w', encoding='utf-8') as f:
+                        # Get all data
+                        cursor.execute(f"SELECT * FROM {table}")
+                        rows = cursor.fetchall()
+                        column_names = [description[0] for description in cursor.description]
+                        
+                        # Generate INSERT statements
+                        f.write(f"-- Data migration for {table} table ({row_count} rows)\n\n")
+                        
+                        column_str = ', '.join(column_names)
+                        for row in rows:
+                            # Format values
+                            values = []
+                            for val in row:
+                                if val is None:
+                                    values.append("NULL")
+                                elif isinstance(val, (int, float)):
+                                    values.append(str(val))
+                                elif isinstance(val, bytes):
+                                    hex_data = val.hex()
+                                    values.append(f"X'{hex_data}'")
+                                else:
+                                    escaped_val = str(val).replace("'", "''")
+                                    values.append(f"'{escaped_val}'")
+                            
+                            values_str = ', '.join(values)
+                            f.write(f"INSERT INTO {table} ({column_str}) VALUES ({values_str});\n")
+                    
+                    print(f"Created data migration for {table} table ({row_count} rows)")
+                else:
+                    # For large tables, split into multiple migration files (100 rows per file)
+                    batch_size = 100
+                    cursor.execute(f"SELECT * FROM {table}")
+                    column_names = [description[0] for description in cursor.description]
+                    column_str = ', '.join(column_names)
+                    
+                    batch_num = 1
+                    while True:
+                        rows = cursor.fetchmany(batch_size)
+                        if not rows:
+                            break
+                            
+                        data_migration = f"migrations/{timestamp}_{db_name}_{table}_data_{batch_num:03d}.sql"
+                        with open(data_migration, 'w', encoding='utf-8') as f:
+                            f.write(f"-- Data migration for {table} table (batch {batch_num}, {len(rows)} rows)\n\n")
+                            
+                            for row in rows:
+                                # Format values
+                                values = []
+                                for val in row:
+                                    if val is None:
+                                        values.append("NULL")
+                                    elif isinstance(val, (int, float)):
+                                        values.append(str(val))
+                                    elif isinstance(val, bytes):
+                                        hex_data = val.hex()
+                                        values.append(f"X'{hex_data}'")
+                                    else:
+                                        escaped_val = str(val).replace("'", "''")
+                                        values.append(f"'{escaped_val}'")
+                                
+                                values_str = ', '.join(values)
+                                f.write(f"INSERT INTO {table} ({column_str}) VALUES ({values_str});\n")
+                                
+                        print(f"Created data migration for {table} table (batch {batch_num}, {len(rows)} rows)")
+                        batch_num += 1
+            
+            conn.close()
+        
+        print("\nMigration files created successfully!")
+        print(f"Migration files location: {os.path.abspath('migrations')}")
+        print("\nTo apply migrations:")
+        print(f"1. cd to your worker directory")
+        print(f"2. wrangler d1 migrations apply {D1_DATABASE_NAME}")
+        
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     # Verify environment first
