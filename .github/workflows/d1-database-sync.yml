@@ -15,7 +15,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: '20'  # This is the key change - using Node.js v20
       
       - name: Set up Python
         uses: actions/setup-python@v4

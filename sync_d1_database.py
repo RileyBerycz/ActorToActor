@@ -149,7 +149,8 @@ def sync_database():
                 ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
                  "--file", file_path, "--remote"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
             )
             
             if result.returncode != 0:
@@ -200,6 +201,40 @@ def ensure_latest_wrangler():
     else:
         raise Exception("Failed to verify Wrangler installation")
 
+def create_d1_database_if_not_exists():
+    """Create the D1 database if it doesn't exist"""
+    print(f"Checking if D1 database '{D1_DATABASE_NAME}' exists...")
+    
+    # List existing D1 databases
+    result = subprocess.run(
+        ["wrangler", "d1", "list"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error listing D1 databases: {result.stderr}")
+        raise Exception("Failed to list D1 databases")
+    
+    # Check if our database exists in the output
+    if D1_DATABASE_NAME not in result.stdout:
+        print(f"Creating D1 database '{D1_DATABASE_NAME}'...")
+        create_result = subprocess.run(
+            ["wrangler", "d1", "create", D1_DATABASE_NAME],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+        )
+        
+        if create_result.returncode != 0:
+            print(f"Error creating D1 database: {create_result.stderr}")
+            raise Exception("Failed to create D1 database")
+        
+        print(f"D1 database '{D1_DATABASE_NAME}' created successfully")
+    else:
+        print(f"D1 database '{D1_DATABASE_NAME}' already exists")
+
 if __name__ == "__main__":
     if not CLOUDFLARE_API_TOKEN:
         print("Error: CLOUDFLARE_API_TOKEN environment variable not set")
@@ -208,4 +243,8 @@ if __name__ == "__main__":
     # Ensure latest wrangler is installed
     ensure_latest_wrangler()
     
+    # Create D1 database if it doesn't exist
+    create_d1_database_if_not_exists()
+    
+    # Run the sync
     sync_database()
