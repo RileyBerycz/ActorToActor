@@ -144,10 +144,10 @@ def sync_database():
             file_path = os.path.join(sql_dir, sql_file)
             print(f"Executing {sql_file}...")
             
-            # Add timeout parameter for large files
+            # Updated command for newer Wrangler versions
             result = subprocess.run(
-                ["npx", "wrangler", "d1", "execute", D1_DATABASE_NAME, "--remote", 
-                 "--json=false", "--command-timeout=300", f"--file={file_path}"],
+                ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                 "--file", file_path, "--remote"],
                 capture_output=True,
                 text=True
             )
@@ -167,9 +167,45 @@ def sync_database():
         # Clean up temp files
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+def ensure_latest_wrangler():
+    """Ensure latest Wrangler is installed"""
+    print("Checking Wrangler installation...")
+    # First uninstall old wrangler if it exists
+    try:
+        subprocess.run(["npm", "uninstall", "-g", "@cloudflare/wrangler"], capture_output=True)
+    except:
+        pass  # Ignore if not installed
+        
+    # Install latest wrangler
+    print("Installing latest Wrangler...")
+    result = subprocess.run(
+        ["npm", "install", "-g", "wrangler"], 
+        capture_output=True, 
+        text=True
+    )
+    
+    if result.returncode != 0:
+        print(f"Error installing Wrangler: {result.stderr}")
+        raise Exception("Failed to install latest Wrangler")
+    
+    # Verify installation
+    result = subprocess.run(
+        ["wrangler", "--version"],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode == 0:
+        print(f"Using Wrangler version: {result.stdout.strip()}")
+    else:
+        raise Exception("Failed to verify Wrangler installation")
+
 if __name__ == "__main__":
     if not CLOUDFLARE_API_TOKEN:
         print("Error: CLOUDFLARE_API_TOKEN environment variable not set")
         exit(1)
+    
+    # Ensure latest wrangler is installed
+    ensure_latest_wrangler()
     
     sync_database()

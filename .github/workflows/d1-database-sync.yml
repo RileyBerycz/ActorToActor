@@ -1,11 +1,10 @@
-name: D1 Database Sync
+name: Sync D1 Database
 
 on:
-  schedule:
-    # Run on the 1st of every month at 2:00 UTC
-    - cron: '0 2 1 * *'
   workflow_dispatch:
-    # Allow manual triggering
+  push:
+    paths:
+      - 'actor-game/public/*.db'
 
 jobs:
   sync-database:
@@ -13,28 +12,22 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
           
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests
-          npm install -g @cloudflare/wrangler
-          
-      - name: Set up Cloudflare authentication
-        run: |
-          # Create .wrangler directory
-          mkdir -p ~/.wrangler
-          
-          # Create wrangler auth config
-          echo '{
-            "api_token": "${{ secrets.CLOUDFLARE_API_TOKEN }}"
-          }' > ~/.wrangler/config.json
-          
-      - name: Run database sync
-        run: python sync_d1_database.py
+      
+      - name: Run database sync script
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python sync_d1_database.py
