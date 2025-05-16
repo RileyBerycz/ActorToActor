@@ -702,20 +702,8 @@ def apply_migrations():
         print("Cannot apply migrations without wrangler.toml")
         return False
     
-    # Try to apply schema migrations first
-    schema_result = subprocess.run(
-        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-         "--file", "migrations/20250516162020_001_schema.sql", "--remote"],
-        capture_output=True,
-        text=True,
-        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
-    )
-    
-    if schema_result.returncode != 0:
-        print(f"Warning: Schema migration might have issues: {schema_result.stderr}")
-    
-    # Fix schema mismatches in migration files
-    fix_schema_mismatches()
+    # First fix the migration files
+    fix_migration_files()
     
     # Now try to apply migrations
     max_retries = 3
@@ -731,31 +719,27 @@ def apply_migrations():
             print("Migrations applied successfully")
             return True
             
-        # Handle specific errors
-        if "UNIQUE constraint failed" in result.stderr:
-            print(f"Constraint error detected (attempt {attempt+1}/{max_retries})")
-        elif "table has no column named" in result.stderr:
+        # If we have errors, try to identify and fix them
+        error_msg = result.stderr
+        
+        # Check for schema/column mismatch errors
+        if "table" in error_msg and "has no column named" in error_msg:
             print(f"Schema mismatch detected (attempt {attempt+1}/{max_retries})")
             
             # Extract the problematic migration file
             import re
-            match = re.search(r"Migration (.*?) failed", result.stderr)
+            match = re.search(r"Migration (.*?) failed", error_msg)
             if match:
                 problem_file = match.group(1)
                 print(f"Problem detected in migration file: {problem_file}")
                 
-                # Remove or fix the problematic file
+                # Skip the problematic file
                 file_path = os.path.join("migrations", problem_file)
                 if os.path.exists(file_path):
-                    # Option 1: Delete the file
-                    # os.remove(file_path)
-                    # print(f"Removed problematic migration: {problem_file}")
-                    
-                    # Option 2: Rename to skip it
-                    os.rename(file_path, file_path + ".skipped")
-                    print(f"Renamed problematic migration: {problem_file} → {problem_file}.skipped")
+                    os.rename(file_path, file_path + ".error")
+                    print(f"Renamed problematic migration: {problem_file} to {problem_file}.error")
         else:
-            print(f"Error applying migrations: {result.stderr}")
+            print(f"Error applying migrations: {error_msg}")
             
         if attempt < max_retries - 1:
             print(f"Retrying in 5 seconds...")
@@ -970,6 +954,27 @@ def fix_schema_mismatches(migration_files_dir="migrations"):
                         
                     values_text = line[values_start_idx:].strip()
                     values_match = re.search(r'VALUES\s*\((.*?)\)', values_text)
+                    if values_match:
+                        values_list = values_match.group(1).split(',')
+                        
+                        for i, col in enumerate(cols):
+                            # Check if column exists in D1 schema
+                            if col in d1_tables[table_name]:
+                                valid_cols.append(col)
+                            else:
+                                print(f"Column {col} not found in D1 table {table_name}, skipping")
+                    
+                    if valid_cols:
+                        # Rewrite the INSERT statement with valid columns
+                        valid_col_str = ", ".join([f"`{col}`" for col in valid_cols])
+                        output_lines.append(f"INSERT OR REPLACE INTO `{table_name}` ({valid_col_str}) VALUES ({values_match.group(1)});")
+                        modified = True
+                    else:
+                        output_lines.append(line)
+            else:
+                output_lines.append(line)
+        
+        if modified:
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(output_lines))
             fixed_count += 1
@@ -978,27 +983,265 @@ def fix_schema_mismatches(migration_files_dir="migrations"):
     print(f"Fixed {fixed_count} migration files with schema mismatches")
     return True
 
+def get_d1_schema():
+    """Get the current schema from D1 database"""
+    print("Fetching current D1 database schema...")
+    
+    result = subprocess.run(
+        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+         "--command", "SELECT name, sql FROM sqlite_master WHERE type='table'", "--remote", "--json"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+    )
+    
+    if result.returncode != 0:
+        print(f"Error getting schema: {result.stderr}")
+        return {}
+    
+    d1_tables = {}
+    try:
+        import json
+        
+        data = json.loads(result.stdout)
+        rows = data.get('results', [{}])[0].get('rows', [])
+        
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+                
+            table_name = row.get('name')
+            if not table_name:
+                continue
+            
+            # Get columns directly with another query
+            col_result = subprocess.run(
+                ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                 f"--command", f"PRAGMA table_info({table_name})", "--remote", "--json"],
+                capture_output=True,
+                text=True,
+                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+            )
+            
+            if col_result.returncode == 0:
+                col_data = json.loads(col_result.stdout)
+                col_rows = col_data.get('results', [{}])[0].get('rows', [])
+                
+                columns = []
+                for col_row in col_rows:
+                    if isinstance(col_row, dict) and 'name' in col_row:
+                        columns.append(col_row['name'])
+                
+                d1_tables[table_name] = columns
+                print(f"Table {table_name} has columns: {columns}")
+        
+        return d1_tables
+        
+    except Exception as e:
+        print(f"Error parsing schema: {str(e)}")
+        return {}
+
+def fix_migration_files():
+    """Fix migration files to match the D1 schema"""
+    print("Fixing migration files to match D1 schema...")
+    
+    # Get current D1 schema
+    d1_schema = get_d1_schema()
+    if not d1_schema:
+        print("Could not get D1 schema, cannot fix migration files")
+        return False
+    
+    # Process all migration files
+    fixed_count = 0
+    skipped_count = 0
+    
+    for filename in os.listdir("migrations"):
+        if not filename.endswith('.sql'):
+            continue
+        
+        # Skip schema files
+        if "schema" in filename:
+            continue
+        
+        # Find which table this migration is for
+        table_name = None
+        for table in d1_schema.keys():
+            if table in filename:
+                table_name = table
+                break
+        
+        if not table_name:
+            print(f"Couldn't determine table for {filename}, skipping")
+            continue
+        
+        filepath = os.path.join("migrations", filename)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Skip files without INSERT statements
+        if "INSERT" not in content:
+            continue
+        
+        # Fix the migration file
+        fixed_content = []
+        has_inserts = False
+        
+        for line in content.split('\n'):
+            if line.strip().startswith('--') or not line.strip():
+                fixed_content.append(line)
+                continue
+                
+            if "INSERT" in line:
+                has_inserts = True
+                
+                # Find column list
+                import re
+                col_match = re.search(r'\((.*?)\)\s+VALUES', line)
+                if not col_match:
+                    fixed_content.append(f"-- SKIPPED: {line}")
+                    continue
+                
+                col_text = col_match.group(1)
+                cols = [c.strip('` ') for c in col_text.split(',')]
+                
+                # Find value list
+                val_match = re.search(r'VALUES\s*\((.*?)\)', line)
+                if not val_match:
+                    fixed_content.append(f"-- SKIPPED: {line}")
+                    continue
+                    
+                val_text = val_match.group(1)
+                
+                # Split values, respecting quotes and parentheses
+                values = []
+                current = ""
+                in_quotes = False
+                for char in val_text:
+                    if char == "'" and (not current or current[-1] != '\\'):
+                        in_quotes = not in_quotes
+                        current += char
+                    elif char == ',' and not in_quotes:
+                        values.append(current.strip())
+                        current = ""
+                    else:
+                        current += char
+                
+                if current:
+                    values.append(current.strip())
+                
+                # Filter to only include columns in the D1 schema
+                valid_cols = []
+                valid_values = []
+                
+                for i, col in enumerate(cols):
+                    if col in d1_schema.get(table_name, []):
+                        valid_cols.append(f"`{col}`")
+                        if i < len(values):
+                            valid_values.append(values[i])
+                        else:
+                            valid_values.append("NULL")
+                
+                if valid_cols:
+                    new_line = f"INSERT OR REPLACE INTO `{table_name}` ({', '.join(valid_cols)}) VALUES ({', '.join(valid_values)});"
+                    fixed_content.append(new_line)
+                else:
+                    fixed_content.append(f"-- SKIPPED: {line}")
+            else:
+                fixed_content.append(line)
+        
+        # Only write back if we modified the file and it has valid inserts
+        if has_inserts:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(fixed_content))
+            fixed_count += 1
+            print(f"Fixed migration file: {filename}")
+        else:
+            # Rename files with no valid inserts
+            os.rename(filepath, filepath + ".skipped")
+            skipped_count += 1
+            print(f"Skipped migration file: {filename}")
+    
+    print(f"Fixed {fixed_count} migration files, skipped {skipped_count} files")
+    return True
+
+def direct_sql_execution_fallback():
+    """Fallback method to update database if migrations fail"""
+    print("Using direct SQL execution as fallback...")
+    
+    # Get schema first
+    d1_schema = get_d1_schema()
+    if not d1_schema:
+        print("Could not get D1 schema for fallback")
+        return False
+    
+    # Priority tables to update
+    priority_tables = ["actors", "actor_connections"]
+    
+    for table in priority_tables:
+        if table not in d1_schema:
+            print(f"Table {table} not found in D1 schema, skipping")
+            continue
+            
+        print(f"Executing direct SQL update for {table}...")
+        
+        # Find migration files for this table
+        filenames = []
+        for filename in os.listdir("migrations"):
+            if filename.endswith('.sql') and table in filename and "schema" not in filename:
+                filenames.append(filename)
+        
+        # Sort by filename to maintain order
+        filenames.sort()
+        
+        for filename in filenames:
+            filepath = os.path.join("migrations", filename)
+            
+            # Skip already error-marked files
+            if filename.endswith('.error') or filename.endswith('.skipped'):
+                continue
+                
+            print(f"Processing {filename}...")
+            
+            # Execute the file directly
+            result = subprocess.run(
+                ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                 "--file", filepath, "--remote"],
+                capture_output=True,
+                text=True,
+                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
+            )
+            
+            if result.returncode != 0:
+                print(f"Error executing {filename}: {result.stderr}")
+            else:
+                print(f"Successfully executed {filename}")
+    
+    return True
+
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
     os.environ["CI"] = "true"
-    
-    # Verify environment first
-    if not verify_environment():
-        print("Environment verification failed. Exiting.")
-        exit(1)
-    
-    # Ensure latest wrangler is installed
-    ensure_latest_wrangler()
     
     # Parse command line arguments
     import sys
     if len(sys.argv) > 1:
         if sys.argv[1] == "generate-migrations":
             # Generate migration files
+            if not verify_environment():
+                exit(1)
+            ensure_latest_wrangler()
             generate_migrations()
         elif sys.argv[1] == "apply-migrations":
             # Apply existing migrations
-            apply_migrations()
+            if not verify_environment():
+                exit(1)
+            ensure_latest_wrangler()
+            
+            success = apply_migrations()
+            
+            # If migrations had errors, try direct SQL as fallback
+            if not success:
+                direct_sql_execution_fallback()
         else:
             print(f"Unknown command: {sys.argv[1]}")
             print("Available commands: generate-migrations, apply-migrations")
