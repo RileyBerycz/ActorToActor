@@ -537,10 +537,14 @@ def generate_migrations():
     
     try:
         # Create migrations directory
-        os.makedirs("migrations", exist_ok=True)
+        migrations_dir = "migrations"
+        os.makedirs(migrations_dir, exist_ok=True)
         
         # Generate timestamp for migration version
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        
+        # First, create a schema-only migration to ensure tables exist
+        schema_file = os.path.join(migrations_dir, f"{timestamp}_001_schema.sql")
         
         # Download databases
         local_dbs = {}
@@ -548,52 +552,83 @@ def generate_migrations():
             output_path = os.path.join(temp_dir, f"{name}.db")
             local_dbs[name] = download_database(url, output_path)
         
-        # Create schema migrations
+        # Extract and write table schemas
+        with open(schema_file, 'w', encoding='utf-8') as f:
+            for db_name, db_path in local_dbs.items():
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                # Get all tables
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                tables = [row[0] for row in cursor.fetchall()]
+                
+                for table in tables:
+                    # Get the CREATE TABLE statement
+                    cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'")
+                    create_sql = cursor.fetchone()[0]
+                    
+                    # Write table create statement
+                    f.write(f"-- Table: {table}\n")
+                    f.write(f"DROP TABLE IF EXISTS {table};\n")
+                    f.write(f"{create_sql};\n\n")
+                
+                conn.close()
+        
+        print(f"Created schema migration: {schema_file}")
+        
+        # Generate data migrations with explicit column names for each table
+        file_index = 2
         for db_name, db_path in local_dbs.items():
             conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row  # This enables column access by name
             cursor = conn.cursor()
             
-            # Get list of tables
+            # Get all tables
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             tables = [row[0] for row in cursor.fetchall()]
             
-            # Create migration file for schema
-            schema_migration = f"migrations/{timestamp}_{db_name}_schema.sql"
-            with open(schema_migration, 'w', encoding='utf-8') as f:
-                for table in tables:
-                    cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'")
-                    create_sql = cursor.fetchone()[0]
-                    f.write(f"DROP TABLE IF EXISTS {table};\n")
-                    f.write(f"{create_sql};\n\n")
-            
-            print(f"Created schema migration for {db_name} database")
-            
-            # Create data migrations (smaller files for each table)
             for table in tables:
-                # Get row count to decide if we need to split
+                # Get column info first
+                cursor.execute(f"PRAGMA table_info({table})")
+                columns = [col['name'] for col in cursor.fetchall()]
+                
+                # Skip if table has no columns (unlikely but possible)
+                if not columns:
+                    continue
+                
+                # Get row count
                 cursor.execute(f"SELECT COUNT(*) FROM {table}")
                 row_count = cursor.fetchone()[0]
                 
                 if row_count == 0:
                     continue  # Skip empty tables
                 
-                # For small tables (<100 rows), create a single migration
-                if row_count < 100:
-                    data_migration = f"migrations/{timestamp}_{db_name}_{table}_data.sql"
-                    with open(data_migration, 'w', encoding='utf-8') as f:
-                        # Get all data
-                        cursor.execute(f"SELECT * FROM {table}")
-                        rows = cursor.fetchall()
-                        column_names = [description[0] for description in cursor.description]
+                # Very small batch size for large tables
+                batch_size = 10
+                if table in ['movie_credits', 'tv_credits']:
+                    batch_size = 5  # Smaller for very large tables
+                
+                # Generate INSERT statements with explicit column names
+                for offset in range(0, row_count, batch_size):
+                    batch_file = os.path.join(
+                        migrations_dir, 
+                        f"{timestamp}_{file_index:03d}_{table}_data.sql"
+                    )
+                    file_index += 1
+                    
+                    cursor.execute(f"SELECT * FROM {table} LIMIT {batch_size} OFFSET {offset}")
+                    rows = cursor.fetchall()
+                    
+                    with open(batch_file, 'w', encoding='utf-8') as f:
+                        f.write(f"-- Data for {table} (Batch {offset//batch_size + 1})\n\n")
                         
-                        # Generate INSERT statements
-                        f.write(f"-- Data migration for {table} table ({row_count} rows)\n\n")
+                        # Generate INSERT statements with explicit column lists
+                        column_str = ", ".join([f"`{col}`" for col in columns])
                         
-                        column_str = ', '.join(column_names)
                         for row in rows:
-                            # Format values
                             values = []
-                            for val in row:
+                            for col in columns:
+                                val = row[col]
                                 if val is None:
                                     values.append("NULL")
                                 elif isinstance(val, (int, float)):
@@ -602,61 +637,22 @@ def generate_migrations():
                                     hex_data = val.hex()
                                     values.append(f"X'{hex_data}'")
                                 else:
+                                    # Escape single quotes in string values
                                     escaped_val = str(val).replace("'", "''")
                                     values.append(f"'{escaped_val}'")
                             
-                            values_str = ', '.join(values)
-                            f.write(f"INSERT INTO {table} ({column_str}) VALUES ({values_str});\n")
+                            values_str = ", ".join(values)
+                            f.write(f"INSERT INTO `{table}` ({column_str}) VALUES ({values_str});\n")
                     
-                    print(f"Created data migration for {table} table ({row_count} rows)")
-                else:
-                    # For large tables, split into multiple migration files (100 rows per file)
-                    batch_size = 100
-                    cursor.execute(f"SELECT * FROM {table}")
-                    column_names = [description[0] for description in cursor.description]
-                    column_str = ', '.join(column_names)
-                    
-                    batch_num = 1
-                    while True:
-                        rows = cursor.fetchmany(batch_size)
-                        if not rows:
-                            break
-                            
-                        data_migration = f"migrations/{timestamp}_{db_name}_{table}_data_{batch_num:03d}.sql"
-                        with open(data_migration, 'w', encoding='utf-8') as f:
-                            f.write(f"-- Data migration for {table} table (batch {batch_num}, {len(rows)} rows)\n\n")
-                            
-                            for row in rows:
-                                # Format values
-                                values = []
-                                for val in row:
-                                    if val is None:
-                                        values.append("NULL")
-                                    elif isinstance(val, (int, float)):
-                                        values.append(str(val))
-                                    elif isinstance(val, bytes):
-                                        hex_data = val.hex()
-                                        values.append(f"X'{hex_data}'")
-                                    else:
-                                        escaped_val = str(val).replace("'", "''")
-                                        values.append(f"'{escaped_val}'")
-                                
-                                values_str = ', '.join(values)
-                                f.write(f"INSERT INTO {table} ({column_str}) VALUES ({values_str});\n")
-                                
-                        print(f"Created data migration for {table} table (batch {batch_num}, {len(rows)} rows)")
-                        batch_num += 1
+                    print(f"Created data migration for {table} (Batch {offset//batch_size + 1})")
             
             conn.close()
         
-        print("\nMigration files created successfully!")
-        print(f"Migration files location: {os.path.abspath('migrations')}")
-        print("\nTo apply migrations:")
-        print(f"1. cd to your worker directory")
-        print(f"2. wrangler d1 migrations apply {D1_DATABASE_NAME}")
+        print(f"Migration files created successfully in {os.path.abspath(migrations_dir)}")
+        return True
         
     finally:
-        # Clean up temp directory
+        # Clean up
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def apply_migrations():
@@ -736,6 +732,12 @@ database_id = "{db_id}"
     except Exception as e:
         print(f"Error creating {wrangler_file}: {str(e)}")
         return False
+
+def show_migration_content(migration_file):
+    """Print the content of a migration file for debugging"""
+    print(f"Examining migration file: {migration_file}")
+    with open(os.path.join("migrations", migration_file), 'r', encoding='utf-8') as f:
+        print(f.read())
 
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
