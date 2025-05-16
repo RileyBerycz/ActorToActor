@@ -14,7 +14,7 @@ DATABASE_URLS = {
     'connections': 'https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actor-game/public/actor_connections.db'
 }
 D1_DATABASE_NAME = "actor-to-actor-db"
-CLOUDFLARE_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 SQLITE_BUSY_TIMEOUT = 60000  # 60 seconds
 
 def download_database(url, output_path):
