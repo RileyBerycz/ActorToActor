@@ -142,22 +142,47 @@ def sync_database():
         print("\nUploading to D1...")
         for sql_file in os.listdir(sql_dir):
             file_path = os.path.join(sql_dir, sql_file)
-            print(f"Executing {sql_file}...")
+            file_size = os.path.getsize(file_path) / (1024 * 1024)  # Size in MB
             
-            # Updated command for newer Wrangler versions
-            result = subprocess.run(
-                ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
-                 "--file", file_path, "--remote"],
-                capture_output=True,
-                text=True,
-                env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN)
-            )
-            
-            if result.returncode != 0:
-                print(f"Error executing {sql_file}: {result.stderr}")
-                raise Exception(f"D1 upload failed for {sql_file}")
+            # If the file is large, split it
+            if file_size > 5:  # 5MB as a threshold
+                print(f"{sql_file} is {file_size:.2f}MB, splitting into smaller files...")
+                split_files = split_sql_file(file_path)
+                files_to_process = split_files
             else:
-                print(f"Successfully executed {sql_file}")
+                files_to_process = [file_path]
+            
+            # Process each file (original or split)
+            for process_file in files_to_process:
+                file_name = os.path.basename(process_file)
+                print(f"Executing {file_name}...")
+                
+                # Add better error handling and debugging
+                try:
+                    # Add timeout to the command
+                    result = subprocess.run(
+                        ["wrangler", "d1", "execute", D1_DATABASE_NAME, 
+                         "--file", process_file, "--remote"],
+                        capture_output=True,
+                        text=True,
+                        env=dict(os.environ, CLOUDFLARE_API_TOKEN=CLOUDFLARE_API_TOKEN),
+                        timeout=300  # 5 minute timeout
+                    )
+                    
+                    if result.returncode != 0:
+                        print(f"Error executing {file_name}:")
+                        print(f"STDERR: {result.stderr}")
+                        print(f"STDOUT: {result.stdout}")
+                        raise Exception(f"D1 upload failed for {file_name}")
+                    else:
+                        print(f"Successfully executed {file_name}")
+                        
+                except subprocess.TimeoutExpired:
+                    print(f"Command timed out when executing {file_name}")
+                    raise Exception(f"D1 upload timed out for {file_name}")
+                except Exception as e:
+                    print(f"Exception when executing {file_name}: {str(e)}")
+                    raise
         
         print(f"\nSync completed in {time.time() - start_time:.2f} seconds")
         
@@ -235,9 +260,102 @@ def create_d1_database_if_not_exists():
     else:
         print(f"D1 database '{D1_DATABASE_NAME}' already exists")
 
-if __name__ == "__main__":
+def split_sql_file(file_path, max_statements=50):
+    """Split a large SQL file into smaller files with fewer statements"""
+    print(f"Splitting {file_path} into smaller files...")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Keep the schema (DROP and CREATE statements)
+    lines = content.split('\n')
+    schema_lines = []
+    data_lines = []
+    in_schema = True
+    
+    for line in lines:
+        if in_schema and line.startswith("INSERT INTO"):
+            in_schema = False
+            
+        if in_schema:
+            schema_lines.append(line)
+        else:
+            data_lines.append(line)
+    
+    schema = '\n'.join(schema_lines)
+    
+    # Split INSERT statements
+    inserts = []
+    current_insert = []
+    insert_count = 0
+    
+    for line in data_lines:
+        if line.startswith("INSERT INTO") and insert_count > 0:
+            inserts.append('\n'.join(current_insert))
+            current_insert = [line]
+            insert_count += 1
+        else:
+            current_insert.append(line)
+            if "INSERT INTO" in line:
+                insert_count += 1
+    
+    if current_insert:
+        inserts.append('\n'.join(current_insert))
+    
+    # Create split files
+    base_name = os.path.splitext(file_path)[0]
+    output_files = []
+    
+    # Create batches of insert statements
+    for i in range(0, len(inserts), max_statements):
+        batch = inserts[i:i+max_statements]
+        if batch:
+            output_file = f"{base_name}_{i//max_statements+1}.sql"
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(f"{schema}\n\n")
+                f.write('\n\n'.join(batch))
+            output_files.append(output_file)
+    
+    return output_files
+
+def verify_environment():
+    """Verify all required environment variables are set"""
+    print("Verifying environment...")
+    
+    # Check Node.js version
+    node_result = subprocess.run(
+        ["node", "--version"],
+        capture_output=True,
+        text=True
+    )
+    
+    if node_result.returncode == 0:
+        node_version = node_result.stdout.strip()
+        print(f"Node.js version: {node_version}")
+        
+        # Check if version is at least 20.0.0
+        version_parts = node_version.lstrip('v').split('.')
+        major = int(version_parts[0])
+        if major < 20:
+            print(f"ERROR: Node.js version must be at least 20.0.0. Found {node_version}")
+            print("Please update your Node.js installation.")
+            return False
+    else:
+        print("Error checking Node.js version")
+        return False
+    
+    # Check for CLOUDFLARE_API_TOKEN
     if not CLOUDFLARE_API_TOKEN:
-        print("Error: CLOUDFLARE_API_TOKEN environment variable not set")
+        print("ERROR: CLOUDFLARE_API_TOKEN environment variable not set")
+        return False
+    
+    print("Environment verification complete.")
+    return True
+
+if __name__ == "__main__":
+    # Verify environment first
+    if not verify_environment():
+        print("Environment verification failed. Exiting.")
         exit(1)
     
     # Ensure latest wrangler is installed
