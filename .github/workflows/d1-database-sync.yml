@@ -34,6 +34,7 @@ jobs:
       - name: Generate migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # This is automatically available
         run: python sync_d1_database.py generate-migrations
       
       # Apply migrations - specify path to wrangler.toml if needed

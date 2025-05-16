@@ -17,18 +17,55 @@ D1_DATABASE_NAME = "actor-to-actor-db"
 CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 SQLITE_BUSY_TIMEOUT = 60000  # 60 seconds
 
-def download_database(url, output_path):
-    """Download database file from URL"""
+def download_database(url, output_path, max_retries=5):
+    """Download database file from URL with retry logic for rate limits"""
     print(f"Downloading database from {url}...")
-    response = requests.get(url, stream=True)
-    response.raise_for_status()
     
-    with open(output_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, stream=True)
+            
+            # If we hit a rate limit, wait and retry
+            if response.status_code == 429:
+                retry_after = int(response.headers.get('Retry-After', 60))
+                print(f"Rate limit hit. Waiting {retry_after} seconds before retry {attempt+1}/{max_retries}...")
+                time.sleep(retry_after)
+                continue
+                
+            response.raise_for_status()
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Database downloaded to {output_path}")
+            return output_path
+            
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429 and attempt < max_retries - 1:
+                # GitHub doesn't always include Retry-After header, use exponential backoff
+                wait_time = 60 * (2 ** attempt)
+                print(f"Rate limit hit. Waiting {wait_time} seconds before retry {attempt+1}/{max_retries}...")
+                time.sleep(wait_time)
+            else:
+                print(f"HTTP error downloading {url}: {str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = 30 * (attempt + 1)
+                    print(f"Retrying in {wait_time} seconds... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    raise
+                    
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading {url}: {str(e)}")
+            if attempt < max_retries - 1:
+                wait_time = 30 * (attempt + 1)
+                print(f"Retrying in {wait_time} seconds... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                raise
     
-    print(f"Database downloaded to {output_path}")
-    return output_path
+    raise Exception(f"Failed to download {url} after {max_retries} attempts")
 
 def extract_table(conn, table_name, output_file, batch_size=100):  # Reduced batch size
     """Extract table schema and data to SQL file"""
@@ -756,6 +793,27 @@ def show_migration_content(migration_file):
     print(f"Examining migration file: {migration_file}")
     with open(os.path.join("migrations", migration_file), 'r', encoding='utf-8') as f:
         print(f.read())
+
+def download_github_file(repo_owner, repo_name, path, output_path):
+    """Download a file from GitHub using the GitHub API with authentication"""
+    github_token = os.environ.get("GITHUB_TOKEN")
+    if not github_token:
+        print("Warning: GITHUB_TOKEN not set. Using anonymous API which has lower rate limits.")
+    
+    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{path}"
+    headers = {"Accept": "application/vnd.github.v3.raw"}
+    
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
+    
+    response = requests.get(api_url, headers=headers, stream=True)
+    response.raise_for_status()
+    
+    with open(output_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    
+    return output_path
 
 if __name__ == "__main__":
     # Force non-interactive mode for CI environments
