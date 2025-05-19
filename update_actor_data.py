@@ -1226,7 +1226,7 @@ max_pages = 500  # From default_pages.txt
 resume_page = 595  # Currently stored value
 
 if resume_page > max_pages:
-    print(f"⚠️ Resume page ({resume_page}) exceeds maximum ({max_pages}). Resetting to page 1.")
+    print(f"⚠️ Resume page ({resume_page}) exceeds maximum ({max_pages}). Resetting to page 1.") 
     resume_page = 1
     # Save the reset value to wherever it's stored
 
