@@ -673,6 +673,15 @@ def load_checkpoint():
     try:
         with open(CHECKPOINT_FILE, 'r') as f:
             checkpoint = json.load(f)
+            
+            # IMPORTANT: Fix the resume page if it exceeds the maximum
+            if checkpoint.get("last_page", 0) >= TOTAL_PAGES:
+                print(f"⚠️ Resume page ({checkpoint['last_page']}) exceeds or equals maximum ({TOTAL_PAGES}). Resetting to page 0.")
+                checkpoint["last_page"] = 0
+                # Save the corrected checkpoint
+                with open(CHECKPOINT_FILE, 'w') as f_write:
+                    json.dump(checkpoint, f_write)
+            
             print(f"Resuming from page {checkpoint['last_page'] + 1}")
             return checkpoint
     except Exception as e:
@@ -706,6 +715,25 @@ def save_checkpoint(page, processed_actors, completed=False):
         json.dump(checkpoint, f)
     
     print(f"Checkpoint saved at page {page}")
+
+# Add this to ensure checkpoint has the completed field
+if os.path.exists(CHECKPOINT_FILE):
+    try:
+        with open(CHECKPOINT_FILE, 'r') as f:
+            checkpoint_data = json.load(f)
+            if 'completed' not in checkpoint_data:
+                checkpoint_data['completed'] = False
+                with open(CHECKPOINT_FILE, 'w') as f_write:
+                    json.dump(checkpoint_data, f_write)
+    except:
+        # Create a default checkpoint file if it can't be read
+        with open(CHECKPOINT_FILE, 'w') as f:
+            json.dump({
+                "last_page": 0,
+                "processed_actors": [],
+                "last_update": None,
+                "completed": False
+            }, f)
 
 # =============================================================================
 # INITIALIZATION
@@ -1565,3 +1593,11 @@ All data successfully updated:
 - Filtering out self-appearances in both movies and TV shows
 - Including credits with popularity >= 1.0
 """)
+
+# Check if we've processed all pages
+if page >= TOTAL_PAGES:
+    print("All pages processed! Marking data collection as complete.")
+    save_checkpoint(page, processed_actors, completed=True)
+else:
+    print("Data collection is not complete. Will continue in next run.")
+    save_checkpoint(page, processed_actors, completed=False)

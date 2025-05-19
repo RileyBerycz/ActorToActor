@@ -8,7 +8,7 @@ on:
       max_pages:
         description: 'Number of pages to process (max 200000)'
         required: true
-        default: '1000'
+        default: '500'
         type: number
       update_default:
         description: 'Save as new default?'
@@ -76,11 +76,15 @@ jobs:
           git commit -m "Update actor data" || echo "No changes to commit"
           git push
           
+      # Check if data collection is complete
       - name: Check if data collection is complete
+        id: check-complete
         if: success() || failure()  # Run this step regardless of previous step result
         run: |
-          if [ -f "actor-game/public/checkpoint.json" ]; then  # Changed from ./checkpoint.json
-            COMPLETED=$(python -c "import json; print(json.load(open('actor-game/public/checkpoint.json'))['completed'])")
+          if [ -f "actor-game/public/checkpoint.json" ]; then
+            COMPLETED=$(python -c "import json; print(json.load(open('actor-game/public/checkpoint.json')).get('completed', 'False'))")
+            echo "::set-output name=is_complete::$COMPLETED"
+            
             if [ "$COMPLETED" != "True" ]; then
               echo "Data collection is incomplete. Triggering another workflow run."
               curl -X POST \
@@ -92,8 +96,20 @@ jobs:
               echo "Data collection is complete."
             fi
           else
+            echo "::set-output name=is_complete::False"
             echo "Checkpoint file not found, cannot determine completion status."
           fi
+          
+      # NEW STEP: Upload to R2 storage only if data collection is complete
+      - name: Upload databases to R2
+        if: steps.check-complete.outputs.is_complete == 'True'
+        run: |
+          python -m pip install requests
+          python upload_r2.py
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_R2_BUCKET_NAME: "actor-to-actor-db-storage"
       
       - name: Update default value if requested
         if: ${{ github.event.inputs.update_default == true }}
