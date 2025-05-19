@@ -1221,6 +1221,15 @@ metrics_conn = sqlite3.connect(metrics_db_path)
 print("Script starting...")
 print(f"Python version: {sys.version}")
 
+# Ensure resume page doesn't exceed max pages
+max_pages = 500  # From default_pages.txt
+resume_page = 595  # Currently stored value
+
+if resume_page > max_pages:
+    print(f"⚠️ Resume page ({resume_page}) exceeds maximum ({max_pages}). Resetting to page 1.")
+    resume_page = 1
+    # Save the reset value to wherever it's stored
+
 for page in range(start_page, TOTAL_PAGES + 1):
     print(f"Processing page {page}/{TOTAL_PAGES}")
     
