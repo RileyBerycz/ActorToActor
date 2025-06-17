@@ -2,7 +2,7 @@ name: Update Actor Data
 
 on:
   schedule:
-    - cron: '0 2 * * 0'  # Runs at 2 AM every Sunday
+    - #cron: '0 2 * * 0'  # Runs at 2 AM every Sunday
   workflow_dispatch:
     inputs:
       max_pages:
