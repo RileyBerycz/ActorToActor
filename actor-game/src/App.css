@@ -3,344 +3,177 @@
   max-width: 1200px;
   margin: 0 auto;
   padding: 20px;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .App-header {
   margin-bottom: 30px;
+  padding-top: 20px;
 }
 
 .App-header h1 {
-  font-size: 2.5rem;
+  font-size: 3rem;
   margin-bottom: 10px;
-  color: #333;
+  background: linear-gradient(45deg, #fff, #e0e0e0);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-shadow: none;
+}
+
+.App-header p {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 1.1rem;
 }
 
 .settings-panel {
   display: flex;
   justify-content: center;
+  align-items: flex-end;
   gap: 20px;
   margin-bottom: 30px;
-  padding: 16px;
-  background-color: #f0f0f0;
-  border-radius: 8px;
+  padding: 24px 32px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-wrap: wrap;
 }
 
 .settings-panel label {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  font-weight: 500;
+  gap: 8px;
+  font-weight: 600;
+  color: #333;
+  font-size: 14px;
 }
 
 .settings-panel select {
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  padding: 10px 16px;
+  border: 2px solid #e1e8f0;
+  border-radius: 12px;
   background-color: white;
-  min-width: 150px;
-}
-
-footer {
-  margin-top: 40px;
-  padding-top: 20px;
-  border-top: 1px solid #eee;
-  color: #666;
-  font-size: 0.9rem;
-}
-
-.checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  min-width: 180px;
+  font-size: 14px;
+  color: #333;
+  outline: none;
   cursor: pointer;
+  transition: all 0.2s ease;
+  appearance: auto;
 }
 
-.checkbox-label input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
+.settings-panel select:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.settings-panel select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .checkbox-container {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 0 15px;
+  gap: 8px;
 }
 
 .checkbox-label-text {
-  margin-bottom: 5px;
-  font-weight: 500;
-}
-
-.custom-checkbox {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  cursor: pointer;
+  font-weight: 600;
+  color: #333;
+  font-size: 14px;
 }
 
 #mcu-checkbox {
-  margin-top: 5px;
+  width: 20px;
+  height: 20px;
+  accent-color: #667eea;
+  cursor: pointer;
+}
+
+#mcu-checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.start-game-container {
+  display: flex;
+  justify-content: center;
+  margin: 40px 0;
+}
+
+.start-game-button {
+  padding: 16px 48px;
+  font-size: 1.2rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 50px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+  transition: all 0.3s ease;
+  letter-spacing: 0.5px;
+}
+
+.start-game-button:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 30px rgba(102, 126, 234, 0.5);
+}
+
+.start-game-button:active {
+  transform: translateY(-1px);
+}
+
+footer {
+  margin-top: 60px;
+  padding: 20px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.85rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .game-instructions {
-  background-color: #f5f5f5;
-  border-radius: 8px;
-  padding: 16px 24px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 16px;
+  padding: 32px;
   margin: 20px 0;
   text-align: left;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
 .game-instructions h3 {
   margin-top: 0;
   color: #333;
+  font-size: 1.4rem;
+  text-align: center;
 }
 
 .game-instructions ol {
-  margin-left: 20px;
-  line-height: 1.5;
+  margin: 16px 0 16px 24px;
+  line-height: 1.8;
 }
 
 .game-instructions ol li {
   margin-bottom: 8px;
+  color: #444;
 }
 
 .game-instructions p:last-child {
   margin-top: 16px;
   font-style: italic;
-  color: #555;
+  color: #666;
 }
 
-/* Update these styles to fix alignment issues */
-
-/* Path container with better wrapping */
-.example-path {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 5px;
-  margin: 20px 0;
-  background-color: #fff;
-  padding: 40px 20px;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  position: relative;
-  max-height: 800px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
-.example-path::-webkit-scrollbar {
-  width: 8px;
-}
-
-.example-path::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
-
-.example-path::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 4px;
-}
-
-/* Row container for snaking paths */
-.path-row {
-  display: flex;
-  align-items: center;
-  margin: 10px 0;
-  width: 100%;
-}
-
-/* Even rows go right-to-left */
-.path-row.even {
-  flex-direction: row-reverse;
-}
-
-/* Arrow styling with image */
-.path-arrow {
-  width: 40px;
-  height: 40px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23555555'%3E%3Cpath d='M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 30px;
-  margin: 0 5px;
-}
-
-/* Reverse arrow for even rows */
-.path-row.even .path-arrow {
-  transform: rotate(180deg);
-}
-
-/* Vertical connector between rows */
-.row-connector {
-  position: absolute;
-  width: 3px;
-  background-color: #555;
-  height: 30px;
-}
-
-/* Path items with better sizing */
-.path-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 110px;
-  position: relative;
-  min-height: 160px;
-  margin: 10px 5px;
-  padding: 5px;
-  border-radius: 8px;
-  transition: transform 0.2s;
-}
-
-.path-item img {
-  width: 70px;
-  height: 105px;
-  object-fit: cover;
-  display: block;
-  margin: 0 auto;
-}
-
-.path-item p {
-  font-size: 11px;
-  max-height: 40px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.path-item:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-}
-
-.actor-example {
-  border: 2px solid #3f51b5;
-}
-
-.movie-example {
-  border: 2px solid #f44336;
-}
-
-.start-actor {
-  border: 3px solid #4CAF50;
-}
-
-.target-actor {
-  border: 3px solid #FF9800;
-}
-
-/* Adjust tags positioning */
-.role-tag {
-  position: absolute;
-  top: -15px; /* Move tags up a bit */
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: bold;
-  color: white;
-  z-index: 1; /* Make sure tags are above other elements */
-}
-
-.role-tag.start {
-  background-color: #4CAF50;
-}
-
-.role-tag.target {
-  background-color: #FF9800;
-}
-
-/* Solution tabs for multiple paths */
-.solution-tabs {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-  justify-content: center;
-}
-
-.solution-tab {
-  padding: 5px 15px;
-  background-color: #eee;
-  border-radius: 20px;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.solution-tab.active {
-  background-color: #3f51b5;
-  color: white;
-}
-
-.example-explanation {
-  background-color: #f8f8f8;
-  padding: 15px;
-  border-radius: 8px;
-  margin-top: 10px;
-}
-
-.example-explanation ol {
-  margin-left: 20px;
-}
-
-.example-explanation li {
-  margin-bottom: 5px;
-}
-
-/* Add a toggle option for those who want to see the full path */
-.path-toggle {
-  background-color: #eee;
-  border: none;
-  padding: 8px 16px;
-  border-radius: 20px;
-  cursor: pointer;
-  margin-bottom: 10px;
-  font-size: 14px;
-}
-
-.path-toggle:hover {
-  background-color: #ddd;
-}
-
-.start-game-container {
-  text-align: center;
-  margin: 30px 0;
-}
-
-.start-game-button {
-  background-color: #4CAF50;
-  color: white;
-  font-size: 1.2rem;
-  padding: 12px 24px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-  transition: all 0.3s ease;
-}
-
-.start-game-button:hover {
-  background-color: #45a049;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-}
-
-.actor-game-header {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.start-actor, .target-actor {
-  text-align: center;
+.start-actor, .target-actor, .m-actor {
   margin: 0 20px;
 }
 
@@ -348,40 +181,41 @@ footer {
   width: 120px;
   height: 180px;
   object-fit: cover;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1); /* Lighter shadow instead of borders */
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   display: block;
   margin: 0 auto;
 }
 
 .actor-name {
   margin-top: 10px;
-  font-weight: bold;
+  font-weight: 600;
+  color: #333;
+}
+
+.start-actor .actor-label, .target-actor .actor-label {
+  color: white;
+  padding: 4px 12px;
+  border-radius: 20px;
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 .start-actor .actor-label {
-  background-color: #4CAF50; /* Green for start */
-  color: white;
-  padding: 3px 8px;
-  border-radius: 4px;
-  display: inline-block;
-  margin-top: 5px;
-  font-size: 0.8rem;
+  background: linear-gradient(135deg, #28a745, #20c997);
 }
 
 .target-actor .actor-label {
-  background-color: #f44336; /* Red for target */
-  color: white;
-  padding: 3px 8px;
-  border-radius: 4px;
-  display: inline-block;
-  margin-top: 5px;
-  font-size: 0.8rem;
+  background: linear-gradient(135deg, #dc3545, #c82333);
 }
 
 .connection-arrow {
   font-size: 2rem;
-  color: #555;
+  color: #667eea;
 }
 
 .path-display-container {
@@ -393,13 +227,14 @@ footer {
   text-align: center;
   margin-top: 20px;
   padding: 20px;
-  background-color: #f8f9fa;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .reset-game-button {
-  background-color: #007bff;
+  background-color: #667eea;
   color: white;
   padding: 8px 16px;
   border: none;
@@ -409,7 +244,6 @@ footer {
   margin-top: 10px;
 }
 
-/* Hint system styling */
 .hint-container {
   margin: 15px auto;
   text-align: center;
@@ -439,7 +273,7 @@ footer {
   display: flex;
   align-items: center;
   border-radius: 4px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .hint-icon {
@@ -452,7 +286,6 @@ footer {
   color: #333;
 }
 
-/* Optimal path styling */
 .optimal-path-section {
   margin-top: 20px;
 }
@@ -470,8 +303,8 @@ footer {
 .optimal-path-display {
   margin: 20px auto;
   padding: 15px;
-  background-color: #f5f5f5;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
   max-width: 90%;
 }
 
@@ -488,9 +321,6 @@ footer {
   text-align: center;
   padding: 5px;
   border-radius: 6px;
-  /* Remove borders */
-  border: none;
-  background-color: #f9f9f9;
 }
 
 .optimal-item.actor {
@@ -533,7 +363,7 @@ footer {
 .search-results {
   background: white;
   border-radius: 4px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   max-height: 300px;
   overflow-y: auto;
 }
@@ -557,12 +387,48 @@ footer {
   margin-right: 10px;
   border-radius: 4px;
 }
+
 .region-selector {
   font-weight: bold;
 }
 
 .global-selected {
-  border: 2px solid #d32f2f;
-  background-color: #ffebee;
+  border: 2px solid #dc3545 !important;
+  background-color: #fff5f5 !important;
   font-weight: bold;
+}
+
+@media (max-width: 768px) {
+  .App {
+    padding: 12px;
+  }
+
+  .App-header h1 {
+    font-size: 2rem;
+  }
+
+  .settings-panel {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 16px;
+  }
+
+  .settings-panel label {
+    width: 100%;
+  }
+
+  .settings-panel select {
+    width: 100%;
+  }
+
+  .checkbox-container {
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .start-game-button {
+    width: 100%;
+    max-width: 300px;
+  }
 }
