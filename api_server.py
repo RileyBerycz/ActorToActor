@@ -27,14 +27,6 @@ def index():
     """Serve the main page"""
     return send_from_directory(STATIC_PATH, 'index.html')
 
-@app.route('/<path:path>')
-def static_files(path):
-    """Serve static files"""
-    try:
-        return send_from_directory(STATIC_PATH, path)
-    except:
-        return send_from_directory(STATIC_PATH, 'index.html')  # SPA fallback
-
 @app.route('/api/stats')
 def get_stats():
     """Get database statistics"""
@@ -609,6 +601,14 @@ def find_optimal_path():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/<path:path>')
+def static_files(path):
+    """Serve static files"""
+    try:
+        return send_from_directory(STATIC_PATH, path)
+    except:
+        return send_from_directory(STATIC_PATH, 'index.html')  # SPA fallback
 
 if __name__ == '__main__':
     # Ensure data directory exists
