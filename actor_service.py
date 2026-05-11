@@ -195,7 +195,7 @@ class ActorDatabaseService:
                 # Insert movie credits
                 for movie in significant_movies:
                     cursor.execute('''
-                    INSERT INTO movie_credits 
+                    INSERT OR REPLACE INTO movie_credits 
                     (id, actor_id, title, character, popularity, release_date)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
@@ -207,7 +207,7 @@ class ActorDatabaseService:
                 # Insert TV credits
                 for tv in significant_tv:
                     cursor.execute('''
-                    INSERT INTO tv_credits 
+                    INSERT OR REPLACE INTO tv_credits 
                     (id, actor_id, name, character, popularity, first_air_date)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
