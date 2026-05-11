@@ -20,8 +20,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY actor_service.py api_server.py scheduler.py ./
-COPY static/ ./static/
-
 COPY --from=frontend-builder /build/build ./actor-game/build/
 
 RUN mkdir -p /app/data
