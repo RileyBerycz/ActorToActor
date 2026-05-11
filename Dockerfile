@@ -27,6 +27,6 @@ RUN mkdir -p /app/data
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD curl -f http://localhost:5000/api/stats || exit 1
+  CMD curl -f http://localhost:5000/health || exit 1
 
 CMD ["python", "api_server.py"]

@@ -17,6 +17,11 @@ CORS(app)
 DATABASE_PATH = "/app/data/actors.db"
 STATIC_PATH = "actor-game/build"
 
+@app.route('/health')
+def health():
+    """Health check endpoint - doesn't require database"""
+    return "healthy\n"
+
 @app.route('/')
 def index():
     """Serve the main page"""
