@@ -1,0 +1,14 @@
+services:
+  actor-db:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+volumes:
+  data:
