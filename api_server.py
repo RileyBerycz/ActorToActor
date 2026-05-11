@@ -15,7 +15,7 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE_PATH = "/app/data/actors.db"
-STATIC_PATH = "actor-game/build"
+STATIC_PATH = "/app/actor-game/build"
 
 @app.route('/health')
 def health():
@@ -611,9 +611,17 @@ def static_files(path):
         return send_from_directory(STATIC_PATH, 'index.html')  # SPA fallback
 
 if __name__ == '__main__':
+    import glob
+    
     # Ensure data directory exists
     os.makedirs('/app/data', exist_ok=True)
-    os.makedirs('/app/static', exist_ok=True)
+    
+    # Log startup info
+    print(f"Starting server on 0.0.0.0:5000")
+    print(f"Static path: {os.path.abspath(STATIC_PATH)}")
+    print(f"Static path exists: {os.path.exists(os.path.abspath(STATIC_PATH))}")
+    print(f"Index file exists: {os.path.exists(os.path.join(os.path.abspath(STATIC_PATH), 'index.html'))}")
+    print(f"Static JS files: {glob.glob(os.path.join(os.path.abspath(STATIC_PATH), 'static', 'js', '*.js'))}")
     
     # Run the server - bind to 0.0.0.0 for Docker
     app.run(host='0.0.0.0', port=5000, debug=False)
