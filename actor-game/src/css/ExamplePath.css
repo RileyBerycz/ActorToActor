@@ -16,7 +16,7 @@
 }
 
 .example-path::-webkit-scrollbar-thumb {
-  background: #667eea;
+  background: rgba(124, 58, 237, 0.3);
   border-radius: 3px;
 }
 
@@ -38,23 +38,23 @@
 }
 
 .example-node.actor {
-  background: linear-gradient(135deg, #667eea22, #764ba222);
-  border: 2px solid #667eea;
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.3);
 }
 
 .example-node.movie {
-  background: linear-gradient(135deg, #ff6b6b22, #feca5722);
-  border: 2px solid #ff6b6b;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 .example-node.start {
-  border-color: #28a745;
-  background: linear-gradient(135deg, #28a74522, #20c99722);
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(16, 185, 129, 0.08);
 }
 
 .example-node.target {
-  border-color: #dc3545;
-  background: linear-gradient(135deg, #dc354522, #c8233322);
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .example-icon {
@@ -65,7 +65,7 @@
 .example-name {
   font-size: 12px;
   font-weight: 600;
-  color: #333;
+  color: rgba(255, 255, 255, 0.7);
   text-align: center;
   max-width: 100px;
 }
@@ -82,16 +82,16 @@
 }
 
 .example-node.start .example-role {
-  background: linear-gradient(135deg, #28a745, #20c997);
+  background: linear-gradient(135deg, #059669, #10b981);
 }
 
 .example-node.target .example-role {
-  background: linear-gradient(135deg, #dc3545, #c82333);
+  background: linear-gradient(135deg, #dc2626, #ef4444);
 }
 
 .example-arrow {
   font-size: 20px;
-  color: #667eea;
+  color: rgba(124, 58, 237, 0.4);
   padding: 0 8px;
   font-weight: bold;
 }
@@ -99,15 +99,15 @@
 .example-explanation {
   margin-top: 20px;
   padding: 20px;
-  background: #f8faff;
+  background: rgba(255, 255, 255, 0.02);
   border-radius: 12px;
-  border: 1px solid #e1e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .example-explanation ol {
   margin: 12px 0 0 20px;
   line-height: 1.8;
-  color: #444;
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .example-explanation li {
@@ -115,7 +115,7 @@
 }
 
 .example-explanation p {
-  color: #666;
+  color: rgba(255, 255, 255, 0.4);
   margin-top: 12px;
   font-style: italic;
 }
