@@ -1,604 +1,527 @@
 import { useState, useEffect, useCallback } from 'react';
-import GameControls from './GameControls';
-import PathDisplay from './PathDisplay';
 import '../css/ActorGame.css'; 
 
-// Database location constants
-const DB_URLS = {
-  LOCAL: 'actors.db',
-  GITHUB: 'https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actor-game/public/actors.db',
-  CONNECTION_DB: 'actor_connections.db',
-  GITHUB_CONNECTION_DB: 'https://raw.githubusercontent.com/RileyBerycz/ActorToActor/main/actor-game/public/actor_connections.db',
-  API_BASE: 'https://actor-to-actor-api.rileyberycz.workers.dev/api'
-};
+// API base URL for Docker deployment
+const API_BASE = process.env.NODE_ENV === 'development' 
+  ? 'http://localhost:5000/api'
+  : '/api';
 
-function ActorGame({ settings, onReset, initialLoading }) {
-  // 1. STATE VARIABLES AND CONSTANTS
-  // State variables
-  const [actorData, setActorData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [isLoading, setIsLoading] = useState(initialLoading || true);
-  const [loadingProgress, setLoadingProgress] = useState(0);
-  const [loadingMessage, setLoadingMessage] = useState("Loading actors...");
-  const [error, setError] = useState(null);
-  const [path, setPath] = useState([]);
-  const [gamePhase, setGamePhase] = useState('initializing');
-  const [targetActor, setTargetActor] = useState(null);
+function ActorGame({ settings, onReset }) {
+  // Game state
+  const [gameState, setGameState] = useState('loading');
   const [startActor, setStartActor] = useState(null);
-  const [hintAvailable, setHintAvailable] = useState(false);
+  const [targetActor, setTargetActor] = useState(null);
+  const [currentPath, setCurrentPath] = useState([]);
+  const [currentActor, setCurrentActor] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [hint, setHint] = useState(null);
-  const [optimalPath, setOptimalPath] = useState([]);
+  const [optimalPath, setOptimalPath] = useState(null);
   const [showOptimalPath, setShowOptimalPath] = useState(false);
-  const [hintTimer, setHintTimer] = useState(null);
-  // eslint-disable-next-line no-unused-vars
-  const [dataSource, setDataSource] = useState(null);
-  const [selectingActors, setSelectingActors] = useState(false);
-  const [pathConnectionCount, setPathConnectionCount] = useState(0);
-
-  // Constants
+  
+  // UI state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [availableMovies, setAvailableMovies] = useState([]);
+  const [loadingMessage, setLoadingMessage] = useState('Loading game...');
+  const [gameMode, setGameMode] = useState('selectMovie');
+  const [selectedMovie, setSelectedMovie] = useState(null);
+  
   const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
-  const PROFILE_SIZE = "w185";
-  const POSTER_SIZE = "w342";
   const defaultImageUrl = "/placeholder-actor.png";
 
-  
-  // Helper function to get image URL 
   const getImageUrl = (path, size = 'w185') => {
     if (!path) return defaultImageUrl;
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     return `${BASE_IMG_URL}${size}${normalizedPath}`;
   };
 
-  // 2. API HELPER FUNCTIONS
-  const fetchFromApi = useCallback(async (endpoint, params = {}) => {
-    const queryString = Object.keys(params)
-      .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
-      .join('&');
-      
-    const url = `${DB_URLS.API_BASE}/${endpoint}${queryString ? '?' + queryString : ''}`;
-    console.log(`🔍 [DEBUG] Fetching from API: ${url}`);
-    
+  const apiCall = useCallback(async (endpoint, options = {}) => {
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status} ${response.statusText}`);
-      }
+      const url = `${API_BASE}/${endpoint}`;
+      const response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json', ...options.headers },
+        ...options
+      });
+      if (!response.ok) throw new Error(`API Error: ${response.status}`);
       return await response.json();
     } catch (error) {
-      console.error(`❌ [DEBUG] API fetch error:`, error);
+      console.error(`API Error:`, error);
       throw error;
     }
   }, []);
 
-  const getRandomConnection = useCallback(async (region, difficulty) => {
-    return fetchFromApi('connections', { region, difficulty });
-  }, [fetchFromApi]);
-
-  const getActorData = useCallback(async (actorIds) => {
-    if (!actorIds || actorIds.length === 0) return {};
-    return fetchFromApi('actors', { ids: actorIds.join(',') });
-  }, [fetchFromApi]);
-
-  const fetchActorCredits = useCallback(async (actorId) => {
-    if (!actorId) return [];
-    
-    try {
-      const creditsData = await fetchFromApi('credits', { actor_id: actorId });
-      return creditsData || [];
-    } catch (error) {
-      console.error("❌ [DEBUG] Error fetching actor credits:", error);
-      return [];
-    }
-  }, [fetchFromApi]);
-
-  // 3. GAME LOGIC FUNCTIONS
-  // Select actors with valid path - robust implementation
-  const selectActors = useCallback(async () => {
-    if (!selectingActors) {
-      console.log("🔍 [DEBUG] Starting actor selection process");
-      console.time("ActorSelection");
-      setSelectingActors(true);
-      setIsLoading(true);
-      
-      try {
-        setLoadingMessage("Finding actors for your game...");
-        setLoadingProgress(85);
-        
-        // First try to get connection from API
-        try {
-          console.log("🔍 [DEBUG] Requesting optimal connection from API");
-          const connectionData = await getRandomConnection(settings.region, settings.difficulty);
-          console.log("✅ [DEBUG] API returned connection data:", connectionData);
-          
-          if (connectionData && connectionData.start_id && connectionData.target_id) {
-            // Get complete actor data for these two actors
-            console.log("🔍 [DEBUG] Requesting actor details");
-            const actorDetails = await getActorData([connectionData.start_id, connectionData.target_id]);
-            console.log("✅ [DEBUG] API returned actor details");
-            
-            // Create actor objects
-            const start = { 
-              id: connectionData.start_id, 
-              ...actorDetails[connectionData.start_id], 
-              type: 'actor' 
-            };
-            
-            const target = { 
-              id: connectionData.target_id, 
-              ...actorDetails[connectionData.target_id], 
-              type: 'actor' 
-            };
-            
-            // Update actor data in state
-            setActorData(prevData => ({
-              ...prevData,
-              ...actorDetails
-            }));
-            
-            // Set actors and game state
-            setStartActor(start);
-            setTargetActor(target);
-            setGamePhase('playing');
-            
-            // Set optimal path if available in the API response
-            if (connectionData.optimal_path) {
-              try {
-                // Process optimal path from API
-                const optimalPath = JSON.parse(connectionData.optimal_path);
-                setOptimalPath(optimalPath);
-              } catch (err) {
-                console.warn("⚠️ [DEBUG] Error parsing optimal path:", err);
-                // Will calculate path later if needed
-              }
-            }
-            
-            // Finish loading
-            setLoadingProgress(100);
-            setLoadingMessage("Ready to play!");
-            setTimeout(() => {
-              setIsLoading(false);
-              setLoading(false);
-              setSelectingActors(false);
-            }, 800);
-            
-            console.timeEnd("ActorSelection");
-            return; // We're done!
-          }
-        } catch (apiError) {
-          console.error("❌ [DEBUG] API error:", apiError);
-          console.log("🔄 [DEBUG] Falling back to local actor selection");
-        }
-        
-        // Fallback to existing method if API fails
-        // (Keep your existing fallback code here)
-        
-      } catch (error) {
-        console.error("❌ [DEBUG] Error in actor selection:", error);
-        setError(`Failed to select actors: ${error.message}`);
-        setIsLoading(false);
-        setLoading(false);
-        setSelectingActors(false);
-      } finally {
-        console.timeEnd("ActorSelection");
-      }
-    }
-  }, [settings.difficulty, settings.region, selectingActors, getActorData, getRandomConnection]);
-  
-  // Generate hint for user
-  const generateHint = useCallback(() => {
-    if (!optimalPath || optimalPath.length === 0) {
-      return {
-        message: "Try finding a popular movie that one of these actors starred in!",
-        type: "general"
-      };
-    }
-    
-    // Find appropriate hint based on path position
-    if (path.length === 0) {
-      const firstStep = optimalPath[1]; // First movie in optimal path
-      if (firstStep && firstStep.type === 'movie') {
-        return {
-          message: `Try looking for a movie that ${startActor?.name} was in that starts with "${firstStep.title.charAt(0)}"`,
-          type: "movie"
-        };
-      }
-    }
-    
-    const lastItem = path[path.length - 1];
-    if (!lastItem) return { message: "Consider recent popular movies", type: "general" };
-    
-    // Find position in optimal path
-    const currentOptimalIndex = optimalPath.findIndex(
-      item => item.type === lastItem.type && String(item.id) === String(lastItem.id)
-    );
-    
-    if (currentOptimalIndex >= 0 && currentOptimalIndex < optimalPath.length - 1) {
-      const nextStep = optimalPath[currentOptimalIndex + 1];
-      if (nextStep) {
-        const firstLetter = nextStep.type === 'actor' ? 
-          nextStep.name.charAt(0) : nextStep.title.charAt(0);
-          
-        return {
-          message: `Try looking for a ${nextStep.type === 'actor' ? 'person' : 'movie/show'} that starts with "${firstLetter}"`,
-          type: nextStep.type
-        };
-      }
-    }
-    
-    return {
-      message: "Try finding actors who worked in big-budget movies or franchises.",
-      type: "general"
-    };
-  }, [optimalPath, path, startActor]);
-
-  // Show hint to user
-  const showHint = useCallback(() => {
-    const newHint = generateHint();
-    console.log("Generated hint:", newHint);
-    
-    if (hintTimer) {
-      clearTimeout(hintTimer);
-    }
-    
-    setHint(newHint);
-    setHintAvailable(false);
-    
-    const timer = setTimeout(() => {
-      setHintAvailable(true);
-    }, 60000);
-    
-    setHintTimer(timer);
-  }, [generateHint, hintTimer]);
-
-  // Handle selection of actors/movies in the game
-  const handleSelection = useCallback((selection) => {
-    console.log("Adding to path:", selection);
-    
-    const processedSelection = {
-      ...selection,
-      name: selection.name || selection.title || 'Unknown',
-      type: selection.type || (selection.profile_path ? 'actor' : 'movie')
-    };
-    
-    setPath(prevPath => [...prevPath, processedSelection]);
-  }, []);
-
-  // Handle path completion
-  const handlePathComplete = useCallback((completedPath) => {
-    console.log("Path completion triggered!");
-    console.log("Completed path:", completedPath);
-    
-    // Safety check for array
-    if (!completedPath || !Array.isArray(completedPath)) {
-      console.error("Error: completedPath is not an array:", completedPath);
-      completedPath = Array.isArray(path) ? [...path] : [];
-      if (targetActor && !completedPath.some(item => item.id === targetActor.id)) {
-        completedPath.push(targetActor);
-      }
-    }
-    
-    // Update path
-    setPath(completedPath);
-    
-    // Calculate connection count
-    const connectionCount = Math.floor(completedPath.length / 2);
-    setPathConnectionCount(connectionCount);
-    
-    // Set game phase to completed
-    setGamePhase('completed');
-  }, [path, targetActor]);
-
-  // Load actor data from SQLite DB
-  const loadDatabase = useCallback(async () => {
+  const startNewGame = useCallback(async () => {
     try {
       setLoading(true);
-      setIsLoading(true);
-      setLoadingMessage("Connecting to game server...");
-      setLoadingProgress(10);
+      setLoadingMessage('Setting up your game...');
+      setGameState('loading');
       
-      // Simple health check to ensure API is available
-      const healthCheck = await fetchFromApi('health');
-      if (!healthCheck || healthCheck.status !== 'ok') {
-        throw new Error("API connection failed");
-      }
+      const gameData = await apiCall(`game/start?difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU || false}`);
       
-      setLoadingProgress(50);
-      setLoadingMessage("Ready to play!");
-      setDataSource("api");
-      
-      // Initialize empty actor data object - will be populated as needed
-      setActorData({});
-      
-      return true;
-    } catch (error) {
-      console.error("API connection error:", error);
-      setError(`Connection error: ${error.message}`);
+      setStartActor(gameData.start_actor);
+      setTargetActor(gameData.target_actor);
+      setCurrentActor(gameData.start_actor);
+      setCurrentPath([gameData.start_actor.id]);
+      setOptimalPath(gameData.optimal_path || null);
+      setGameState('playing');
+      setGameMode('selectMovie');
       setLoading(false);
-      setIsLoading(false);
-      return false;
+      
+    } catch (error) {
+      setError('Failed to start game: ' + error.message);
+      setLoading(false);
     }
-  }, [fetchFromApi]); // Add fetchFromApi as a dependency
+  }, [settings, apiCall]);
 
-  // 4. EFFECT HOOKS
-  // Main data loading effect
-  useEffect(() => {
-    const loadData = async () => {
+  const searchActors = useCallback(async (query) => {
+    if (!query || query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    try {
+      const results = await apiCall(`search?q=${encodeURIComponent(query)}`);
+      setSearchResults(results.actors || []);
+    } catch (error) {
+      setSearchResults([]);
+    }
+  }, [apiCall]);
+
+  const getActorMovies = useCallback(async (actorId) => {
+    try {
+      const movies = await apiCall(`actors/${actorId}/movies?exclude_mcu=${settings.excludeMCU || false}`);
+      setAvailableMovies(movies || []);
+    } catch (error) {
+      setAvailableMovies([]);
+    }
+  }, [apiCall, settings.excludeMCU]);
+
+  const selectMovie = useCallback((movie) => {
+    setSelectedMovie(movie);
+    setGameMode('selectActor');
+    setSearchQuery('');
+    setSearchResults([]);
+    setCurrentPath(prev => [...prev, movie.id]);
+    setAvailableMovies([]);
+  }, []);
+
+  const selectActor = useCallback(async (actor) => {
+    const newPath = [...currentPath, actor.id];
+    setCurrentPath(newPath);
+    setCurrentActor(actor);
+    setSelectedMovie(null);
+    setGameMode('selectMovie');
+    setSearchQuery('');
+    setSearchResults([]);
+    setAvailableMovies([]);
+    
+    if (actor.id === targetActor.id) {
       try {
-        const success = await loadDatabase();
+        const validation = await apiCall('game/validate-path', {
+          method: 'POST',
+          body: JSON.stringify({
+            path: newPath,
+            start_actor_id: startActor.id,
+            target_actor_id: targetActor.id,
+            difficulty: settings.difficulty,
+            exclude_mcu: settings.excludeMCU
+          })
+        });
         
-        if (success) {
-          // Wait briefly then select actors
-          setTimeout(() => {
-            selectActors();
-          }, 500);
+        if (validation.valid) {
+          setGameState('won');
+        } else {
+          setError('Invalid path: ' + validation.error);
         }
-      } catch (err) {
-        console.error("Error in data loading flow:", err);
-        setError(`Failed to load: ${err.message}`);
-        setLoading(false);
-        setIsLoading(false);
-        setSelectingActors(false);
+      } catch (error) {
+        setError('Error validating your solution');
       }
-    };
+    }
+  }, [currentPath, targetActor, startActor, settings, apiCall]);
+
+  const getHint = useCallback(async () => {
+    if (optimalPath) {
+      setHint('Check the solution to see the optimal path!');
+      return;
+    }
     
-    if (loading && !actorData && !selectingActors) {
-      loadData();
+    try {
+      const result = await apiCall(`game/find-path?start_id=${startActor.id}&target_id=${targetActor.id}&difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU}`);
+      setOptimalPath(result.path);
+      setHint('Optimal path loaded! Click "Show Solution" to see it.');
+    } catch (error) {
+      setHint('Try looking for popular movies or actors with many connections!');
     }
-  }, [loadDatabase, selectActors, loading, actorData, selectingActors]);
+  }, [startActor, targetActor, settings, optimalPath, apiCall]);
 
-  // Manage loading screen visibility
+  const resetPath = useCallback(() => {
+    setCurrentPath([startActor.id]);
+    setCurrentActor(startActor);
+    setSelectedMovie(null);
+    setGameMode('selectMovie');
+    setSearchQuery('');
+    setSearchResults([]);
+    setError(null);
+    setGameState('playing');
+  }, [startActor]);
+
+  // Initialize game on mount or settings change
   useEffect(() => {
-    console.log("Loading state:", { 
-      isLoading, 
-      actorData: !!actorData, 
-      startActor: !!startActor, 
-      targetActor: !!targetActor, 
-      gamePhase 
-    });
-    
-    // Update loading message based on state
-    if (gamePhase !== 'completed') {
-      if (!actorData) {
-        setLoadingMessage("Loading actor database...");
-        setLoadingProgress(prev => Math.max(prev, 20));
-      } else if (!startActor || !targetActor) {
-        setLoadingMessage("Finding actors for your game...");
-        setLoadingProgress(prev => Math.max(prev, 60));
-      } else if (gamePhase !== 'playing') {
-        setLoadingMessage("Setting up game...");
-        setLoadingProgress(prev => Math.max(prev, 90));
-      } else {
-        setLoadingProgress(100);
-        
-        // Hide loading screen with delay for smooth transition
-        const timer = setTimeout(() => {
-          setIsLoading(false);
-        }, 1000);
-        
-        return () => clearTimeout(timer);
-      }
-    } else {
-      // Don't show loading during completed game
-      setIsLoading(false);
-    }
-  }, [actorData, startActor, targetActor, gamePhase, isLoading]);
+    startNewGame();
+  }, [startNewGame]);
 
-  // Hint timer management
+  // Load available movies when current actor changes and user starts searching
   useEffect(() => {
-    if (startActor && targetActor && gamePhase === 'playing') {
-      // Reset hint state
-      setHint(null);
-      setHintAvailable(false);
-      
-      // Clear any existing timers
-      if (hintTimer) {
-        clearTimeout(hintTimer);
-      }
-      
-      // Set new hint timer
-      const timer = setTimeout(() => {
-        setHintAvailable(true);
-      }, 90000); // 1.5 minutes
-      
-      setHintTimer(timer);
-      
-      // Cleanup
-      return () => {
-        if (hintTimer) {
-          clearTimeout(hintTimer);
-        }
-      };
+    if (currentActor && gameMode === 'selectMovie' && availableMovies.length === 0) {
+      getActorMovies(currentActor.id);
     }
-  }, [startActor, targetActor, gamePhase, hintTimer]);
+  }, [currentActor, gameMode, getActorMovies, availableMovies.length]);
 
-  // 5. RETURN/JSX
-  return (
-    <div className="actor-game">
-      {/* Loading overlay with solid background */}
-      {isLoading && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          backgroundColor: '#1a1a2e', // Solid color background
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 9999,
-          opacity: 1
-        }}>
-          <div style={{
-            background: 'white',
-            padding: '30px',
-            borderRadius: '8px',
-            boxShadow: '0 5px 20px rgba(0, 0, 0, 0.3)',
-            textAlign: 'center',
-            maxWidth: '400px',
-            width: '90%'
-          }}>
-            <h2>Loading Game...</h2>
-            <div style={{
-              width: '100%',
-              height: '12px',
-              background: '#eee',
-              borderRadius: '6px',
-              overflow: 'hidden',
-              margin: '20px 0'
-            }}>
-              <div style={{
-                width: `${loadingProgress}%`,
-                height: '100%',
-                background: 'linear-gradient(to right, #4CAF50, #8BC34A)',
-                transition: 'width 0.5s'
-              }}></div>
-            </div>
-            <p>{loadingMessage || "Preparing your challenge..."}</p>
-          </div>
+  // Handle search input changes
+  useEffect(() => {
+    if (gameMode === 'selectActor') {
+      const timeoutId = setTimeout(() => {
+        searchActors(searchQuery);
+      }, 300);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [searchQuery, gameMode, searchActors]);
+
+  if (loading) {
+    return (
+      <div className="actor-game loading">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <h2>{loadingMessage}</h2>
         </div>
-      )}
-      
-      {/* Error display */}
-      {error && (
-        <div className="error-message">
-          <h3>Error</h3>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="actor-game error">
+        <div className="error-container">
+          <h2>Game Error</h2>
           <p>{error}</p>
-          <button onClick={onReset}>Try Again</button>
-        </div>
-      )}
-      
-      {/* Game header with actors */}
-      <div className="actor-game-header">
-        <div className="start-actor">
-          <img 
-            src={getImageUrl(startActor?.profile_path, PROFILE_SIZE)} 
-            alt={startActor?.name || 'Starting Actor'} 
-            className="actor-image"
-          />
-          <div className="actor-name">{startActor?.name || 'Loading...'}</div>
-          <div className="actor-label">START</div>
-        </div>
-        
-        <div className="connection-arrow">→</div>
-        
-        <div className="target-actor">
-          <img 
-            src={getImageUrl(targetActor?.profile_path, PROFILE_SIZE)} 
-            alt={targetActor?.name || 'Target Actor'} 
-            className="actor-image"
-          />
-          <div className="actor-name">{targetActor?.name || 'Loading...'}</div>
-          <div className="actor-label">TARGET</div>
-        </div>
-      </div>
-      
-      {/* Path display */}
-      <div className="path-display-container">
-        <PathDisplay 
-          baseImgUrl={BASE_IMG_URL}
-          profileSize={PROFILE_SIZE}
-          posterSize={POSTER_SIZE}
-          actorData={actorData}
-          path={path}
-          startActor={startActor}
-          targetActor={targetActor}
-        />
-      </div>
-      
-      {/* Game controls */}
-      <div className="game-controls-container">
-        <GameControls 
-          actorData={actorData}
-          settings={settings}
-          baseImgUrl={BASE_IMG_URL}
-          profileSize={PROFILE_SIZE}
-          posterSize={POSTER_SIZE}
-          path={path}
-          setPath={setPath}
-          gamePhase={gamePhase}
-          startActor={startActor}
-          targetActor={targetActor}
-          onSelection={handleSelection}
-          onComplete={handlePathComplete}
-          fetchActorCredits={fetchActorCredits}  
-        />
-      </div>
-      
-      {/* Hint button */}
-      {gamePhase === 'playing' && hintAvailable && (
-        <div className="hint-container">
-          <button className="hint-button" onClick={showHint}>
-            Need a Hint?
+          <button onClick={startNewGame} className="retry-button">
+            Try Again
           </button>
         </div>
-      )}
-      
-      {/* Hint display */}
-      {hint && (
-        <div className="hint-display">
-          <div className="hint-icon">💡</div>
-          <div className="hint-message">{hint.message}</div>
-        </div>
-      )}
-      
-      {/* Game completion screen */}
-      {gamePhase === 'completed' && (
-        <div className="game-completion">
-          <h2>Congratulations!</h2>
-          <p>You successfully connected {startActor?.name} to {targetActor?.name} in {pathConnectionCount} steps!</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="actor-game">
+      {/* Game Header */}
+      <div className="game-header">
+        <div className="game-challenge">
+          <div className="actor-card start">
+            <img 
+              src={getImageUrl(startActor?.profile_path)} 
+              alt={startActor?.name}
+              onError={(e) => { e.target.src = defaultImageUrl; }}
+            />
+            <h3>{startActor?.name}</h3>
+          </div>
           
-          {/* Optimal path section */}
-          {optimalPath && optimalPath.length > 0 && (
-            <div className="optimal-path-section">
-              <button 
-                className="show-optimal_path-button"  // Changed from "show-optimal_path-button"
-                onClick={() => setShowOptimalPath(!showOptimalPath)}
-              >
-                {showOptimalPath ? "Hide" : "Show"} Optimal Path ({Math.floor(optimalPath?.length / 2) || 0} steps)
-              </button>
+          <div className="path-arrow">
+            <span>Connect to</span>
+            <div className="arrow">→</div>
+          </div>
+          
+          <div className="actor-card target">
+            <img 
+              src={getImageUrl(targetActor?.profile_path)} 
+              alt={targetActor?.name}
+              onError={(e) => { e.target.src = defaultImageUrl; }}
+            />
+            <h3>{targetActor?.name}</h3>
+          </div>
+        </div>
+        
+        <div className="game-info">
+          <div className="difficulty">
+            {settings.difficulty} 
+            {settings.difficulty === 'easy' && ' (max 2 connections)'}
+            {settings.difficulty === 'normal' && ' (max 4 connections)'}
+            {settings.difficulty === 'hard' && ' (max 6 connections)'}
+          </div>
+          <div className="path-length">Connections: {Math.floor(currentPath.length / 2)}</div>
+          {settings.excludeMCU && <div className="mcu-filter">MCU Excluded</div>}
+        </div>
+      </div>
+
+      {/* Current Path Display */}
+      <div className="current-path">
+        <div className="path-header">
+          <h3>Your Path</h3>
+          <div className="path-stats">
+            <span className="connections-count">{Math.floor(currentPath.length / 2)} connections</span>
+            <span className="difficulty-indicator">{settings.difficulty}</span>
+          </div>
+        </div>
+        
+        <div className="path-visualization">
+          {currentPath.length > 0 && (
+            <div className="path-chain">
+              {/* Start Actor */}
+              <div className="path-node actor start">
+                <div className="node-avatar">
+                  <img 
+                    src={getImageUrl(startActor?.profile_path)} 
+                    alt={startActor?.name}
+                    onError={(e) => { e.target.src = defaultImageUrl; }}
+                  />
+                </div>
+                <div className="node-label">{startActor?.name}</div>
+              </div>
               
-              {showOptimalPath && (
-                <div className="optimal-path-display">
-                  <p>The shortest possible path:</p>
-                  <div className="optimal-path-items">
-                    {optimalPath.map((item, index) => (
-                      <div key={index} className={`optimal-item ${item.type}`}>
-                        {item.type === 'actor' ? (
-                          <>
-                            <img 
-                              src={getImageUrl(item.profile_path, PROFILE_SIZE)} 
-                              alt={item.name} 
-                            />
-                            <div className="item-name">{item.name}</div>
-                          </>
-                        ) : (
-                          <>
-                            <img 
-                              src={getImageUrl(item.poster_path, POSTER_SIZE)} 
-                              alt={item.title} 
-                            />
-                            <div className="item-name">{item.title}</div>
-                          </>
-                        )}
+              {/* Path items */}
+              {currentPath.slice(1).map((item, index) => (
+                <div key={index} className="path-segment">
+                  <div className="path-connector">
+                    <div className="connector-line"></div>
+                  </div>
+                  
+                  {index % 2 === 0 ? (
+                    // Movie
+                    <div className="path-node movie">
+                      <div className="node-icon">🎬</div>
+                      <div className="node-label">{selectedMovie?.title || `Movie ${item}`}</div>
+                    </div>
+                  ) : (
+                    // Actor
+                    <div className="path-node actor">
+                      <div className="node-avatar">
+                        <img 
+                          src={getImageUrl(currentActor?.profile_path)} 
+                          alt={currentActor?.name}
+                          onError={(e) => { e.target.src = defaultImageUrl; }}
+                        />
                       </div>
-                    ))}
+                      <div className="node-label">{currentActor?.name}</div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              
+              {/* Next step indicator */}
+              {gameState === 'playing' && (
+                <div className="path-segment next">
+                  <div className="path-connector">
+                    <div className="connector-line dashed"></div>
+                  </div>
+                  <div className="path-node target">
+                    <div className="node-avatar">
+                      <img 
+                        src={getImageUrl(targetActor?.profile_path)} 
+                        alt={targetActor?.name}
+                        onError={(e) => { e.target.src = defaultImageUrl; }}
+                      />
+                    </div>
+                    <div className="node-label">{targetActor?.name}</div>
+                    <div className="target-badge">TARGET</div>
                   </div>
                 </div>
               )}
             </div>
           )}
-          
-          <button className="reset-game-button" onClick={onReset}>
-            Play Again
+        </div>
+      </div>
+
+      {/* Game Controls */}
+      <div className="game-controls">
+        {gameState === 'playing' && (
+          <>
+            {gameMode === 'selectMovie' && (
+              <div className="movie-selection">
+                <div className="step-header">
+                  <div className="step-number">Step {Math.floor(currentPath.length / 2) + 1}</div>
+                  <h3>Choose a movie starring <span className="actor-highlight">{currentActor?.name}</span></h3>
+                </div>
+                
+                <div className="search-box">
+                  <input
+                    type="text"
+                    placeholder={`Search for movies with ${currentActor?.name}...`}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="movie-search"
+                    autoFocus
+                  />
+                  <div className="search-icon">🎬</div>
+                </div>
+                
+                {searchQuery.length > 0 && (
+                  <div className="search-results movies">
+                    {availableMovies
+                      .filter(movie => 
+                        movie.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (movie.character && movie.character.toLowerCase().includes(searchQuery.toLowerCase()))
+                      )
+                      .slice(0, 8)
+                      .map(movie => (
+                        <div 
+                          key={movie.id} 
+                          className="movie-card clickable"
+                          onClick={() => selectMovie(movie)}
+                        >
+                          <div className="movie-info">
+                            <div className="movie-title">{movie.title}</div>
+                            <div className="movie-details">
+                              <span className="movie-character">as {movie.character}</span>
+                              <span className="movie-year">
+                                ({movie.release_date ? new Date(movie.release_date).getFullYear() : 'N/A'})
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    }
+                    {availableMovies.filter(movie => 
+                      movie.title.toLowerCase().includes(searchQuery.toLowerCase())
+                    ).length === 0 && searchQuery.length > 2 && (
+                      <div className="no-results">
+                        No movies found matching "{searchQuery}"
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {searchQuery.length === 0 && (
+                  <div className="search-hint">
+                    💡 Start typing to search for movies starring {currentActor?.name}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {gameMode === 'selectActor' && selectedMovie && (
+              <div className="actor-selection">
+                <div className="step-header">
+                  <div className="step-number">Step {Math.floor(currentPath.length / 2) + 1}</div>
+                  <h3>Who else appeared in <span className="movie-highlight">"{selectedMovie.title}"</span>?</h3>
+                </div>
+                
+                <div className="search-box">
+                  <input
+                    type="text"
+                    placeholder="Type actor's name..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="actor-search"
+                    autoFocus
+                  />
+                  <div className="search-icon">🎭</div>
+                </div>
+                
+                {searchQuery.length > 1 && (
+                  <div className="search-results actors">
+                    {searchResults.length > 0 ? (
+                      searchResults.slice(0, 6).map(actor => (
+                        <div 
+                          key={actor.id}
+                          className="actor-result clickable"
+                          onClick={() => selectActor(actor)}
+                        >
+                          <div className="actor-avatar">
+                            <img 
+                              src={getImageUrl(actor.profile_path)} 
+                              alt={actor.name}
+                              onError={(e) => { e.target.src = defaultImageUrl; }}
+                            />
+                          </div>
+                          <div className="actor-info">
+                            <span className="actor-name">{actor.name}</span>
+                            {actor.id === targetActor?.id && (
+                              <span className="target-indicator">🎯 TARGET!</span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="no-results">
+                        No actors found matching "{searchQuery}"
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {searchQuery.length <= 1 && (
+                  <div className="search-hint">
+                    💡 Start typing to search for actors who appeared in "{selectedMovie.title}"
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {gameState === 'won' && (
+          <div className="victory">
+            <h2>🎉 Congratulations! 🎉</h2>
+            <p>You successfully connected {startActor?.name} to {targetActor?.name}!</p>
+            <p>Your path used {Math.floor(currentPath.length / 2)} connections.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Action Buttons */}
+      <div className="action-buttons">
+        <button onClick={getHint} className="hint-button">
+          Get Hint
+        </button>
+        
+        {optimalPath && (
+          <button 
+            onClick={() => setShowOptimalPath(!showOptimalPath)} 
+            className="solution-button"
+          >
+            {showOptimalPath ? 'Hide Solution' : 'Show Solution'}
           </button>
+        )}
+        
+        <button onClick={resetPath} className="reset-path-button">
+          Reset Path
+        </button>
+        
+        <button onClick={startNewGame} className="new-game-button">
+          New Game
+        </button>
+        
+        <button onClick={onReset} className="back-button">
+          Back to Menu
+        </button>
+      </div>
+
+      {/* Hint Display */}
+      {hint && (
+        <div className="hint-display">
+          <div className="hint-content">
+            <span className="hint-icon">💡</span>
+            <span>{hint}</span>
+            <button onClick={() => setHint(null)} className="close-hint">×</button>
+          </div>
         </div>
       )}
-      
-      {/* Debug info - data source display (development only) */}
-      {dataSource && process.env.NODE_ENV === 'development' && (
-        <div className="debug-info" style={{fontSize: '0.7rem', opacity: 0.7, margin: '10px 0 0'}}>
-          Data source: {dataSource}
+
+      {/* Optimal Path Display */}
+      {showOptimalPath && optimalPath && (
+        <div className="optimal-path-display">
+          <h3>Optimal Solution:</h3>
+          <div className="optimal-path">
+            {optimalPath.map((item, index) => (
+              <div key={index} className={`path-item ${index % 2 === 0 ? 'actor' : 'movie'}`}>
+                {index % 2 === 0 ? 
+                  `Actor: ${item.n || item.name || 'Unknown'}` : 
+                  `Movie: ${item.n || item.title || 'Unknown'}`
+                }
+                {index < optimalPath.length - 1 && <span className="path-arrow">→</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
