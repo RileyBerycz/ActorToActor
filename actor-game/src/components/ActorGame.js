@@ -6,7 +6,7 @@ const API_BASE = process.env.NODE_ENV === 'development'
   ? 'http://localhost:5000/api'
   : '/api';
 
-function ActorGame({ settings, onReset }) {
+function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
   // Game state
   const [gameState, setGameState] = useState('loading');
   const [startActor, setStartActor] = useState(null);
@@ -24,7 +24,7 @@ function ActorGame({ settings, onReset }) {
   const [searchResults, setSearchResults] = useState([]);
   const [availableMovies, setAvailableMovies] = useState([]);
   const [loadingMessage, setLoadingMessage] = useState('Loading game...');
-  const [gameMode, setGameMode] = useState('selectMovie');
+  const [uiMode, setUiMode] = useState('selectMovie');
   const [selectedMovie, setSelectedMovie] = useState(null);
   const [pathMovies, setPathMovies] = useState({});
   const [pathActors, setPathActors] = useState({});
@@ -59,22 +59,33 @@ function ActorGame({ settings, onReset }) {
       setLoadingMessage('Setting up your game...');
       setGameState('loading');
       
-      const gameData = await apiCall(`game/start?difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU || false}`);
-      
-      setStartActor(gameData.start_actor);
-      setTargetActor(gameData.target_actor);
-      setCurrentActor(gameData.start_actor);
-      setCurrentPath([gameData.start_actor.id]);
-      setOptimalPath(gameData.optimal_path || null);
-      setGameState('playing');
-      setGameMode('selectMovie');
-      setLoading(false);
-      
+      if (gameMode === 'daily' && dailyConnection?.available) {
+        // Daily connection mode
+        setStartActor(dailyConnection.start_actor);
+        setTargetActor(dailyConnection.target_actor);
+        setCurrentActor(dailyConnection.start_actor);
+        setCurrentPath([dailyConnection.start_actor.id]);
+        setOptimalPath(dailyConnection.optimal_path || null);
+        setGameState('playing');
+        setUiMode('selectMovie');
+        setLoading(false);
+      } else {
+        const gameData = await apiCall(`game/start?difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU || false}`);
+        
+        setStartActor(gameData.start_actor);
+        setTargetActor(gameData.target_actor);
+        setCurrentActor(gameData.start_actor);
+        setCurrentPath([gameData.start_actor.id]);
+        setOptimalPath(gameData.optimal_path || null);
+        setGameState('playing');
+        setUiMode('selectMovie');
+        setLoading(false);
+      }
     } catch (error) {
       setError('Failed to start game: ' + error.message);
       setLoading(false);
     }
-  }, [settings, apiCall]);
+  }, [settings, gameMode, dailyConnection, apiCall]);
 
   const searchActors = useCallback(async (query, movieId) => {
     if (!query || query.length < 2) {
@@ -139,7 +150,7 @@ function ActorGame({ settings, onReset }) {
       // Auto-complete check failed, fall through to normal actor search
     }
     
-    setGameMode('selectActor');
+    setUiMode('selectActor');
     setSearchQuery('');
     setSearchResults([]);
   }, [currentPath, targetActor, startActor, settings, apiCall]);
@@ -150,7 +161,7 @@ function ActorGame({ settings, onReset }) {
     setCurrentPath(newPath);
     setCurrentActor(actor);
     setSelectedMovie(null);
-    setGameMode('selectMovie');
+    setUiMode('selectMovie');
     setSearchQuery('');
     setSearchResults([]);
     setAvailableMovies([]);
@@ -203,7 +214,7 @@ function ActorGame({ settings, onReset }) {
     setCurrentPath([startActor.id]);
     setCurrentActor(startActor);
     setSelectedMovie(null);
-    setGameMode('selectMovie');
+    setUiMode('selectMovie');
     setSearchQuery('');
     setSearchResults([]);
     setError(null);
@@ -217,20 +228,20 @@ function ActorGame({ settings, onReset }) {
 
   // Load available movies when current actor changes and user starts searching
   useEffect(() => {
-    if (currentActor && gameMode === 'selectMovie' && availableMovies.length === 0) {
+    if (currentActor && uiMode === 'selectMovie' && availableMovies.length === 0) {
       getActorMovies(currentActor.id);
     }
-  }, [currentActor, gameMode, getActorMovies, availableMovies.length]);
+  }, [currentActor, uiMode, getActorMovies, availableMovies.length]);
 
   // Handle search input changes
   useEffect(() => {
-    if (gameMode === 'selectActor') {
+    if (uiMode === 'selectActor') {
       const timeoutId = setTimeout(() => {
         searchActors(searchQuery, selectedMovie?.id);
       }, 300);
       return () => clearTimeout(timeoutId);
     }
-  }, [searchQuery, gameMode, searchActors, selectedMovie]);
+  }, [searchQuery, uiMode, searchActors, selectedMovie]);
 
   if (loading) {
     return (
@@ -281,6 +292,7 @@ function ActorGame({ settings, onReset }) {
         </div>
         <div className="challenge-meta">
           <span className="meta-difficulty">{settings.difficulty}</span>
+          {gameMode === 'daily' && <span className="meta-daily">Daily</span>}
           <span className="meta-connections">{connectionCount}/{maxConnections}</span>
           {settings.excludeMCU && <span className="meta-mcu">No MCU</span>}
         </div>
@@ -326,7 +338,7 @@ function ActorGame({ settings, onReset }) {
 
       {/* Interaction area */}
       <div className="interaction-area">
-        {gameState === 'playing' && gameMode === 'selectMovie' && (
+        {gameState === 'playing' && uiMode === 'selectMovie' && (
           <div className="interaction-card">
             <div className="interaction-prompt">
               Pick a movie starring <span className="accent">{currentActor?.name}</span>
@@ -367,7 +379,7 @@ function ActorGame({ settings, onReset }) {
           </div>
         )}
 
-        {gameState === 'playing' && gameMode === 'selectActor' && selectedMovie && (
+        {gameState === 'playing' && uiMode === 'selectActor' && selectedMovie && (
           <div className="interaction-card">
             <div className="interaction-prompt">
               Who else was in <span className="accent">{selectedMovie.title}</span>?
@@ -445,7 +457,9 @@ function ActorGame({ settings, onReset }) {
         <div className="action-row">
           <button onClick={getHint} className="action-btn hint">Hint</button>
           <button onClick={resetPath} className="action-btn reset">Reset</button>
-          <button onClick={startNewGame} className="action-btn new">New Game</button>
+          <button onClick={gameMode === 'daily' ? onReset : startNewGame} className="action-btn new">
+            {gameMode === 'daily' ? 'Back Home' : 'New Game'}
+          </button>
           <button onClick={onReset} className="action-btn back">Back</button>
         </div>
       </div>

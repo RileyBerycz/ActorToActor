@@ -8,8 +8,10 @@ import os
 import sqlite3
 import json
 import random
+import html
+from datetime import date, datetime
 from collections import deque
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder=None)
@@ -17,6 +19,31 @@ CORS(app)
 
 DATABASE_PATH = "/app/data/actors.db"
 STATIC_PATH = "/app/actor-game/build"
+
+def init_daily_connections_table():
+    """Ensure daily_connections table exists"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS daily_connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_date DATE UNIQUE NOT NULL,
+        start_actor_id INTEGER NOT NULL,
+        target_actor_id INTEGER NOT NULL,
+        optimal_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    conn.commit()
+    conn.close()
+
+def is_local_request():
+    """Check if request comes from local network"""
+    ip = request.remote_addr or ''
+    return ip in ('127.0.0.1', '::1', 'localhost') or ip.startswith(('192.168.', '10.', '172.16.'))
+
+# Initialize DB on import
+init_daily_connections_table()
 
 @app.route('/health')
 def health():
@@ -57,6 +84,342 @@ def get_stats():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/daily-connection')
+def get_daily_connection():
+    """Get today's daily connection"""
+    try:
+        today = date.today().isoformat()
+        conn = sqlite3.connect(DATABASE_PATH)
+        c = conn.cursor()
+        c.execute('SELECT start_actor_id, target_actor_id, optimal_path FROM daily_connections WHERE target_date = ?', (today,))
+        row = c.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({"available": False, "message": "No daily connection for today"}), 404
+        
+        start_id, target_id, optimal_path_json = row
+        
+        # Get actor details
+        conn = sqlite3.connect(DATABASE_PATH)
+        c = conn.cursor()
+        c.execute('SELECT id, name, profile_path, popularity FROM actors WHERE id IN (?, ?)', (start_id, target_id))
+        actors_db = {r[0]: {"id": r[0], "name": r[1], "profile_path": r[2], "popularity": r[3]} for r in c.fetchall()}
+        conn.close()
+        
+        return jsonify({
+            "available": True,
+            "date": today,
+            "start_actor": actors_db.get(start_id),
+            "target_actor": actors_db.get(target_id),
+            "optimal_path": json.loads(optimal_path_json) if optimal_path_json else None
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/admin/daily-connection', methods=['GET', 'POST', 'DELETE'])
+def admin_daily_connection():
+    """Admin: Manage daily connections (local-only)"""
+    if not is_local_request():
+        return jsonify({"error": "Admin access restricted to local network"}), 403
+    
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        target_date = request.args.get('date', date.today().isoformat())
+        c.execute('SELECT id, target_date, start_actor_id, target_actor_id, optimal_path, created_at FROM daily_connections WHERE target_date = ?', (target_date,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"exists": False, "date": target_date})
+        return jsonify({
+            "exists": True, "id": row[0], "date": row[1],
+            "start_actor_id": row[2], "target_actor_id": row[3],
+            "optimal_path": json.loads(row[4]) if row[4] else None,
+            "created_at": row[5]
+        })
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        target_date = data.get('date', date.today().isoformat())
+        start_id = data['start_actor_id']
+        target_id = data['target_actor_id']
+        optimal_path = json.dumps(data.get('optimal_path', []))
+        
+        c.execute('''
+        INSERT OR REPLACE INTO daily_connections (target_date, start_actor_id, target_actor_id, optimal_path)
+        VALUES (?, ?, ?, ?)
+        ''', (target_date, start_id, target_id, optimal_path))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "date": target_date})
+    
+    elif request.method == 'DELETE':
+        dc_id = request.args.get('id')
+        if dc_id:
+            c.execute('DELETE FROM daily_connections WHERE id = ?', (dc_id,))
+        else:
+            c.execute('DELETE FROM daily_connections WHERE target_date = ?', (request.args.get('date', date.today().isoformat()),))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+
+@app.route('/api/admin/daily-connections')
+def admin_list_daily_connections():
+    """Admin: List all scheduled daily connections (local-only)"""
+    if not is_local_request():
+        return jsonify({"error": "Admin access restricted to local network"}), 403
+    
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, target_date, start_actor_id, target_actor_id, created_at FROM daily_connections ORDER BY target_date DESC LIMIT 30')
+    rows = c.fetchall()
+    conn.close()
+    
+    result = []
+    for row in rows:
+        result.append({"id": row[0], "date": row[1], "start_actor_id": row[2], "target_actor_id": row[3], "created_at": row[4]})
+    return jsonify({"connections": result})
+
+@app.route('/api/admin/actors/search')
+def admin_actor_search():
+    """Admin: Search actors (local-only)"""
+    if not is_local_request():
+        return jsonify({"error": "Admin access restricted to local network"}), 403
+    
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({"actors": []})
+    
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, name, popularity, profile_path FROM actors WHERE name LIKE ? ORDER BY popularity DESC LIMIT 20', (f'%{q}%',))
+    actors = [{"id": r[0], "name": r[1], "popularity": r[2], "profile_path": r[3]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"actors": actors})
+
+@app.route('/api/admin/find-path')
+def admin_find_path():
+    """Admin: Find optimal path between two actors (local-only)"""
+    if not is_local_request():
+        return jsonify({"error": "Admin access restricted to local network"}), 403
+    
+    start_id = request.args.get('start', type=int)
+    target_id = request.args.get('target', type=int)
+    if not start_id or not target_id:
+        return jsonify({"error": "Missing start or target"}), 400
+    
+    # Reuse the BFS pathfinding logic
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute('''
+    SELECT m1.actor_id, m2.actor_id, m1.id, m1.title
+    FROM movie_credits m1
+    JOIN movie_credits m2 ON m1.id = m2.id AND m1.actor_id < m2.actor_id
+    ORDER BY m1.actor_id
+    ''')
+    graph = {}
+    edge_movies = {}
+    for a1, a2, mid, title in c.fetchall():
+        graph.setdefault(a1, []).append(a2)
+        graph.setdefault(a2, []).append(a1)
+        key = (a1, a2) if a1 < a2 else (a2, a1)
+        if key not in edge_movies:
+            edge_movies[key] = (mid, title)
+    
+    visited = {start_id: None}
+    q = deque([start_id])
+    found = False
+    while q and not found:
+        cur = q.popleft()
+        for nb in graph.get(cur, []):
+            if nb not in visited:
+                visited[nb] = cur
+                if nb == target_id:
+                    found = True
+                    break
+                q.append(nb)
+    
+    if not found:
+        conn.close()
+        return jsonify({"error": "No path found"}), 404
+    
+    path_ids = []
+    node = target_id
+    while node is not None:
+        path_ids.append(node)
+        node = visited[node]
+    path_ids.reverse()
+    
+    path = []
+    for i in range(len(path_ids) - 1):
+        a1, a2 = path_ids[i], path_ids[i+1]
+        key = (a1, a2) if a1 < a2 else (a2, a1)
+        movie_id, movie_title = edge_movies.get(key, (None, "Unknown"))
+        c.execute('SELECT name, profile_path FROM actors WHERE id=?', (a1,))
+        actor = c.fetchone()
+        path.append({"type": "actor", "id": a1, "name": actor[0] if actor else "Unknown", "profile_path": actor[1] if actor else None})
+        path.append({"type": "movie", "id": movie_id, "title": movie_title})
+    c.execute('SELECT name, profile_path FROM actors WHERE id=?', (target_id,))
+    target = c.fetchone()
+    path.append({"type": "actor", "id": target_id, "name": target[0] if target else "Unknown", "profile_path": target[1] if target else None})
+    
+    conn.close()
+    return jsonify({"path": path, "length": len(path_ids) - 1})
+
+@app.route('/api/admin')
+def admin_panel():
+    """Admin panel HTML page (local-only)"""
+    if not is_local_request():
+        return "<h1>403 Forbidden</h1><p>Admin access restricted to local network</p>", 403
+    
+    return ADMIN_HTML
+
+ADMIN_HTML = '''<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Actor-to-Actor Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a1a;color:#e0e0e0;padding:20px;max-width:900px;margin:0 auto}
+h1{color:#4ade80;margin-bottom:20px}
+h2{color:#94a3b8;margin:20px 0 10px;font-size:1.1em}
+.card{background:#1a1a2e;border-radius:12px;padding:20px;margin-bottom:16px}
+label{display:block;margin-bottom:4px;color:#94a3b8;font-size:0.85em}
+input,select,button{background:#16213e;color:#e0e0e0;border:1px solid #2a2a4a;border-radius:6px;padding:8px 12px;font-size:0.95em;width:100%;margin-bottom:8px}
+button{background:#4ade80;color:#0a0a1a;font-weight:600;cursor:pointer;border:none}
+button:hover{background:#22c55e}
+button.danger{background:#ef4444}
+button.danger:hover{background:#dc2626}
+.search-results{max-height:200px;overflow-y:auto;background:#16213e;border-radius:6px;padding:4px}
+.search-item{padding:8px 12px;cursor:pointer;border-radius:4px}
+.search-item:hover{background:#2a2a4a}
+.search-item.selected{background:#4ade80;color:#0a0a1a}
+.row{display:flex;gap:12px}
+.row>*{flex:1}
+.path-display{margin-top:12px;padding:12px;background:#0a0a1a;border-radius:6px;font-size:0.9em;line-height:1.6}
+.connection-list{list-style:none}
+.connection-list li{padding:8px 0;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between}
+.badge{background:#4ade80;color:#0a0a1a;padding:2px 8px;border-radius:4px;font-size:0.8em}
+</style>
+</head>
+<body>
+<h1>🎬 Actor-to-Actor Admin</h1>
+
+<div class="card">
+  <h2>Set Daily Connection</h2>
+  <label>Date</label>
+  <input type="date" id="dcDate">
+  <div class="row">
+    <div>
+      <label>Start Actor</label>
+      <input type="text" id="startSearch" placeholder="Search actors..." autocomplete="off">
+      <div class="search-results" id="startResults"></div>
+    </div>
+    <div>
+      <label>Target Actor</label>
+      <input type="text" id="targetSearch" placeholder="Search actors..." autocomplete="off">
+      <div class="search-results" id="targetResults"></div>
+    </div>
+  </div>
+  <div style="margin-top:8px">
+    <button onclick="findPath()">Find Optimal Path</button>
+    <button onclick="saveDaily()" style="background:#818cf8">Save Daily Connection</button>
+  </div>
+  <div class="path-display" id="pathPreview">Select start and target actors, then click "Find Optimal Path"</div>
+</div>
+
+<div class="card">
+  <h2>Upcoming Connections</h2>
+  <ul class="connection-list" id="connectionList">Loading...</ul>
+</div>
+
+<script>
+let selectedStart = null, selectedTarget = null, optimalPath = null;
+
+document.getElementById('dcDate').value = new Date().toISOString().split('T')[0];
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+async function searchActors(inputId, resultsId, cb) {
+  const q = document.getElementById(inputId).value.trim();
+  if (q.length < 2) { document.getElementById(resultsId).innerHTML = ''; cb(null); return; }
+  const r = await fetch('/api/admin/actors/search?q=' + encodeURIComponent(q));
+  const data = await r.json();
+  const results = document.getElementById(resultsId);
+  if (!data.actors || data.actors.length === 0) { results.innerHTML = '<div class="search-item">No results</div>'; return; }
+  results.innerHTML = data.actors.map(a =>
+    '<div class="search-item" onclick="selectActor(' + a.id + ',\\\'' + a.name.replace(/'/g,"\\\\'") + "','" + inputId + "','" + resultsId + "')\">" +
+    a.name + ' <span style="color:#94a3b8;font-size:0.85em">(pop: ' + a.popularity.toFixed(1) + ')</span></div>'
+  ).join('');
+  if (cb) cb(data.actors);
+}
+
+document.getElementById('startSearch').addEventListener('input', debounce(() => searchActors('startSearch','startResults'), 300));
+document.getElementById('targetSearch').addEventListener('input', debounce(() => searchActors('targetSearch','targetResults'), 300));
+
+function selectActor(id, name, inputId, resultsId) {
+  document.getElementById(inputId).value = name;
+  document.getElementById(resultsId).innerHTML = '';
+  if (inputId === 'startSearch') selectedStart = id;
+  else selectedTarget = id;
+  document.getElementById('pathPreview').textContent = 'Selected: ' + (selectedStart ? 'Start ✓' : '') + ' ' + (selectedTarget ? 'Target ✓' : '') + '. Click "Find Optimal Path".';
+}
+
+async function findPath() {
+  if (!selectedStart || !selectedTarget) { document.getElementById('pathPreview').textContent = 'Please select both start and target actors.'; return; }
+  document.getElementById('pathPreview').textContent = 'Finding optimal path...';
+  const r = await fetch('/api/admin/find-path?start=' + selectedStart + '&target=' + selectedTarget);
+  if (!r.ok) { document.getElementById('pathPreview').textContent = 'No path found between these actors.'; return; }
+  const data = await r.json();
+  optimalPath = data.path;
+  const html = optimalPath.map((item, i) => {
+    const name = item.name || item.title;
+    const color = item.type === 'actor' ? '#4ade80' : '#f59e0b';
+    return '<span style="color:' + color + '">' + name + '</span>' +
+      (i < optimalPath.length - 1 ? ' <span style="color:#94a3b8">→</span> ' : '');
+  }).join('');
+  document.getElementById('pathPreview').innerHTML = '<strong>Optimal Path (' + data.length + ' connections):</strong><br>' + html;
+}
+
+async function saveDaily() {
+  if (!selectedStart || !selectedTarget) { alert('Select both actors first!'); return; }
+  const date = document.getElementById('dcDate').value;
+  const r = await fetch('/api/admin/daily-connection', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({date, start_actor_id: selectedStart, target_actor_id: selectedTarget, optimal_path: optimalPath || []})
+  });
+  const data = await r.json();
+  if (data.success) { alert('Saved!'); loadConnections(); }
+  else alert('Error: ' + (data.error || 'unknown'));
+}
+
+async function loadConnections() {
+  const r = await fetch('/api/admin/daily-connections');
+  const data = await r.json();
+  const list = document.getElementById('connectionList');
+  if (!data.connections || data.connections.length === 0) { list.innerHTML = '<li style="color:#94a3b8">No connections scheduled</li>'; return; }
+  list.innerHTML = data.connections.map(dc =>
+    '<li><span><strong>' + dc.date + '</strong> — actor ' + dc.start_actor_id + ' → ' + dc.target_actor_id + '</span>' +
+    '<button class="danger" onclick="deleteConnection(' + dc.id + ')" style="width:auto;padding:2px 10px;font-size:0.85em">X</button></li>'
+  ).join('');
+}
+
+async function deleteConnection(id) {
+  if (!confirm('Delete this daily connection?')) return;
+  await fetch('/api/admin/daily-connection?id=' + id, {method: 'DELETE'});
+  loadConnections();
+}
+
+loadConnections();
+</script>
+</body>
+</html>'''
 
 @app.route('/api/actors')
 def get_actors():

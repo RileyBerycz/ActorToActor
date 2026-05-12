@@ -19,7 +19,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY actor_service.py api_server.py scheduler.py entrypoint.sh ./
+COPY actor_service.py api_server.py scheduler.py entrypoint.sh build_actor_map.py ./
 COPY --from=frontend-builder /build/build ./actor-game/build/
 
 RUN mkdir -p /app/data && chmod +x entrypoint.sh

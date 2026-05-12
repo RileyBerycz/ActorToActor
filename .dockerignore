@@ -1,0 +1,106 @@
+# Docker ignore file for Actor-to-Actor project
+
+# Git
+.git
+.gitignore
+.github
+
+# Node modules and build artifacts
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+actor-game/node_modules
+actor-game/build
+actor-game/.env.local
+actor-game/.env.development.local
+actor-game/.env.test.local
+actor-game/.env.production.local
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+build
+develop-eggs
+dist
+downloads
+eggs
+.eggs
+lib
+lib64
+parts
+sdist
+var
+wheels
+*.egg-info
+.installed.cfg
+*.egg
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage
+
+# Database files (keep local copies)
+*.db-journal
+*.db-wal
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Firebase keys (should be mounted as secrets)
+firebase/*.json
+
+# Data directories (should be mounted as volumes)
+data/
+databases/
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+README.md
+*.md
+
+# Git artifacts
+ActorToActor.git/
+ActorToActor.git.bfg-report/
+
+# JAR files
+*.jar
+
+# PNG files (unless needed for the app)
+*.png

@@ -1,0 +1,19 @@
+# Development Dockerfile for hot reloading
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies for development
+COPY actor-game/package*.json ./
+RUN npm install
+
+# Copy source code
+COPY actor-game/src ./src
+COPY actor-game/public ./public
+COPY actor-game/config-overrides.js ./
+
+# Expose port for React dev server
+EXPOSE 3000
+
+# Start development server
+CMD ["npm", "start"]

@@ -7,11 +7,11 @@ Core functionality for maintaining an up-to-date database of actors with popular
 import os
 import requests
 import json
-import time
+import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sqlite3
 import sys
 from datetime import datetime
-from tqdm import tqdm
 
 # Configuration
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
@@ -96,13 +96,13 @@ class ActorDatabaseService:
                 if response.status_code == 200:
                     return response.json()
                 elif response.status_code == 429:  # Rate limit
-                    time.sleep(2 ** attempt)
+                    _time.sleep(2 ** attempt)
                 else:
                     print(f"API Error: {response.status_code}")
                     return None
             except Exception as e:
                 print(f"Request failed (attempt {attempt + 1}): {e}")
-                time.sleep(1)
+                _time.sleep(1)
         return None
     
     def calculate_weighted_popularity(self, tmdb_popularity, movie_credits, tv_credits):
@@ -119,19 +119,120 @@ class ActorDatabaseService:
         
         return min(tmdb_popularity * (1 + credit_boost), 100.0)  # Cap at 100
     
+    def _process_actor_page_item(self, person):
+        """Process a single actor from a page listing. Thread-safe."""
+        delay = 0.03
+        actor_id = person['id']
+        name = person['name']
+        tmdb_popularity = person.get('popularity', 0)
+        profile_path = person.get('profile_path', '')
+        
+        details = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}", 
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        
+        place_of_birth = "Unknown"
+        if details:
+            place_of_birth = details.get('place_of_birth', 'Unknown') or 'Unknown'
+        
+        movies = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}/movie_credits",
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        movie_credits = movies.get('cast', []) if movies else []
+        
+        tv_shows = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}/tv_credits",
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        tv_credits = tv_shows.get('cast', []) if tv_shows else []
+        
+        weighted_popularity = self.calculate_weighted_popularity(
+            tmdb_popularity, movie_credits, tv_credits
+        )
+        
+        filtered_movies = [
+            m for m in movie_credits 
+            if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
+        ]
+        significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+        
+        filtered_tv = [
+            t for t in tv_credits 
+            if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
+        ]
+        significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+        
+        return {
+            'actor': (actor_id, name, weighted_popularity, profile_path,
+                      place_of_birth, len(significant_movies) + len(significant_tv),
+                      tmdb_popularity),
+            'movies': [(m['id'], actor_id, m.get('title', ''), m.get('character', ''),
+                        m.get('popularity', 0), m.get('release_date', '')) for m in significant_movies],
+            'tv': [(t['id'], actor_id, t.get('name', ''), t.get('character', ''),
+                    t.get('popularity', 0), t.get('first_air_date', '')) for t in significant_tv]
+        }
+    
+    def _process_reindex_item(self, actor_id, name):
+        """Re-fetch credits for one actor. Thread-safe."""
+        delay = 0.03
+        
+        person = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}",
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        tmdb_popularity = person.get('popularity', 0) if person else 0
+        
+        movies = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}/movie_credits",
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        movie_credits = movies.get('cast', []) if movies else []
+        
+        tv_shows = self.make_api_request(
+            f"{BASE_URL}/person/{actor_id}/tv_credits",
+            {"api_key": self.api_key}
+        )
+        _time.sleep(delay)
+        tv_credits = tv_shows.get('cast', []) if tv_shows else []
+        
+        filtered_movies = [
+            m for m in movie_credits
+            if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
+        ]
+        significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+        
+        filtered_tv = [
+            t for t in tv_credits
+            if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
+        ]
+        significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+        
+        return {
+            'actor_id': actor_id,
+            'tmdb_popularity': tmdb_popularity,
+            'movies': [(m['id'], actor_id, m.get('title', ''), m.get('character', ''),
+                        m.get('popularity', 0), m.get('release_date', '')) for m in significant_movies],
+            'tv': [(t['id'], actor_id, t.get('name', ''), t.get('character', ''),
+                    t.get('popularity', 0), t.get('first_air_date', '')) for t in significant_tv]
+        }
+    
     def update_actor_data(self, max_pages=10):
-        """Update actor database from TMDB"""
+        """Update actor database from TMDB using parallel credit fetching"""
         print(f"Updating actor database (max {max_pages} pages)...")
         
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
-        
         processed_count = 0
         
         for page in range(1, max_pages + 1):
-            print(f"Processing page {page}/{max_pages}")
-            
-            # Get popular actors
+            print(f"Fetching page {page}/{max_pages}...")
             params = {"api_key": self.api_key, "page": page}
             data = self.make_api_request(f"{BASE_URL}/person/popular", params)
             
@@ -139,106 +240,55 @@ class ActorDatabaseService:
                 print(f"Failed to fetch page {page}")
                 continue
             
-            for person in tqdm(data['results'], desc=f"Page {page}"):
-                actor_id = person['id']
-                name = person['name']
-                tmdb_popularity = person.get('popularity', 0)
-                profile_path = person.get('profile_path', '')
-                
-                # Get additional details
-                details = self.make_api_request(
-                    f"{BASE_URL}/person/{actor_id}", 
-                    {"api_key": self.api_key}
-                )
-                
-                place_of_birth = "Unknown"
-                if details:
-                    place_of_birth = details.get('place_of_birth', 'Unknown') or 'Unknown'
-                
-                # Get movie credits
-                movies = self.make_api_request(
-                    f"{BASE_URL}/person/{actor_id}/movie_credits",
-                    {"api_key": self.api_key}
-                )
-                movie_credits = movies.get('cast', []) if movies else []
-                
-                # Get TV credits  
-                tv_shows = self.make_api_request(
-                    f"{BASE_URL}/person/{actor_id}/tv_credits",
-                    {"api_key": self.api_key}
-                )
-                tv_credits = tv_shows.get('cast', []) if tv_shows else []
-                
-                # Calculate weighted popularity
-                weighted_popularity = self.calculate_weighted_popularity(
-                    tmdb_popularity, movie_credits, tv_credits
-                )
-                
-                # Filter credits to significant ones, sorted by popularity
-                filtered_movies = [
-                    m for m in movie_credits 
-                    if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
-                ]
-                significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
-                
-                filtered_tv = [
-                    t for t in tv_credits 
-                    if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
-                ]
-                significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
-                
-                # Insert/update actor
+            people = data['results']
+            print(f"Fetching credits for {len(people)} actors on page {page} (5 workers)...")
+            
+            results = []
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(self._process_actor_page_item, p) for p in people]
+                for i, future in enumerate(as_completed(futures)):
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append(result)
+                    except Exception as e:
+                        print(f"  Error on page {page}: {e}")
+                    if (i + 1) % 10 == 0 or (i + 1) == len(people):
+                        print(f"  Fetched {i+1}/{len(people)}")
+            
+            for result in results:
+                actor_id = result['actor'][0]
                 cursor.execute('''
                 INSERT OR REPLACE INTO actors 
                 (id, name, popularity, profile_path, place_of_birth, credits_count, last_updated, raw_popularity)
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
-                ''', (
-                    actor_id, name, weighted_popularity, profile_path, 
-                    place_of_birth, len(significant_movies) + len(significant_tv),
-                    tmdb_popularity
-                ))
+                ''', result['actor'])
                 
-                # Clear old credits for this actor
                 cursor.execute('DELETE FROM movie_credits WHERE actor_id = ?', (actor_id,))
                 cursor.execute('DELETE FROM tv_credits WHERE actor_id = ?', (actor_id,))
                 
-                # Insert movie credits
-                for movie in significant_movies:
+                for movie in result['movies']:
                     cursor.execute('''
                     INSERT OR REPLACE INTO movie_credits 
                     (id, actor_id, title, character, popularity, release_date)
                     VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (
-                        movie['id'], actor_id, movie.get('title', ''),
-                        movie.get('character', ''), movie.get('popularity', 0),
-                        movie.get('release_date', '')
-                    ))
+                    ''', movie)
                 
-                # Insert TV credits
-                for tv in significant_tv:
+                for tv in result['tv']:
                     cursor.execute('''
                     INSERT OR REPLACE INTO tv_credits 
                     (id, actor_id, name, character, popularity, first_air_date)
                     VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (
-                        tv['id'], actor_id, tv.get('name', ''),
-                        tv.get('character', ''), tv.get('popularity', 0),
-                        tv.get('first_air_date', '')
-                    ))
+                    ''', tv)
                 
                 processed_count += 1
-                
-                # Rate limiting
-                time.sleep(0.1)
             
-            # Commit after each page
             conn.commit()
-            print(f"Page {page} completed ({len(data['results'])} actors)")
+            print(f"Page {page} completed ({len(results)} actors)")
         
         conn.close()
         print(f"Database update completed! Processed {processed_count} actors")
         
-        # Update status file
         with open("/app/data/status.json", "w") as f:
             json.dump({
                 "last_updated": datetime.now().isoformat(),
@@ -248,88 +298,56 @@ class ActorDatabaseService:
     
     def reindex_credits(self):
         """Re-fetch credits for all existing actors (preserves actor list, refreshes movie/TV credits)"""
-        import time as _time
-        
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT id, name FROM actors')
         actors = cursor.fetchall()
         total = len(actors)
-        print(f"Reindexing credits for {total} actors...")
+        print(f"Reindexing credits for {total} actors (5 workers, batches of 50)...")
         
+        batch_size = 50
         processed = 0
-        for actor_id, name in actors:
-            # Get fresh person data (for raw popularity)
-            person = self.make_api_request(
-                f"{BASE_URL}/person/{actor_id}",
-                {"api_key": self.api_key}
-            )
-            tmdb_popularity = person.get('popularity', 0) if person else 0
-            
-            # Re-fetch credits from TMDB
-            movies = self.make_api_request(
-                f"{BASE_URL}/person/{actor_id}/movie_credits",
-                {"api_key": self.api_key}
-            )
-            movie_credits = movies.get('cast', []) if movies else []
-            
-            tv_shows = self.make_api_request(
-                f"{BASE_URL}/person/{actor_id}/tv_credits",
-                {"api_key": self.api_key}
-            )
-            tv_credits = tv_shows.get('cast', []) if tv_shows else []
-            
-            # Apply new filtering (50 cap, sorted by popularity)
-            filtered_movies = [
-                m for m in movie_credits
-                if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
-            ]
-            significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
-            
-            filtered_tv = [
-                t for t in tv_credits
-                if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
-            ]
-            significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
-            
-            # Clear old credits
-            cursor.execute('DELETE FROM movie_credits WHERE actor_id = ?', (actor_id,))
-            cursor.execute('DELETE FROM tv_credits WHERE actor_id = ?', (actor_id,))
-            
-            # Insert new credits
-            for movie in significant_movies:
-                cursor.execute('''
-                INSERT OR REPLACE INTO movie_credits
-                (id, actor_id, title, character, popularity, release_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    movie['id'], actor_id, movie.get('title', ''),
-                    movie.get('character', ''), movie.get('popularity', 0),
-                    movie.get('release_date', '')
-                ))
-            
-            for tv in significant_tv:
-                cursor.execute('''
-                INSERT OR REPLACE INTO tv_credits
-                (id, actor_id, name, character, popularity, first_air_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    tv['id'], actor_id, tv.get('name', ''),
-                    tv.get('character', ''), tv.get('popularity', 0),
-                    tv.get('first_air_date', '')
-                ))
-            
-            # Update raw popularity on the actor record
-            cursor.execute('UPDATE actors SET raw_popularity = ? WHERE id = ?', (tmdb_popularity, actor_id))
-            
-            processed += 1
-            if processed % 100 == 0:
-                conn.commit()
-                print(f"  Reindexed {processed}/{total} actors")
-            
-            _time.sleep(0.1)
         
-        conn.commit()
+        for start in range(0, total, batch_size):
+            batch = actors[start:start + batch_size]
+            results = []
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(self._process_reindex_item, aid, nm): (aid, nm) for aid, nm in batch}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append(result)
+                    except Exception as e:
+                        print(f"  Error reindexing: {e}")
+            
+            for result in results:
+                aid = result['actor_id']
+                cursor.execute('DELETE FROM movie_credits WHERE actor_id = ?', (aid,))
+                cursor.execute('DELETE FROM tv_credits WHERE actor_id = ?', (aid,))
+                
+                for movie in result['movies']:
+                    cursor.execute('''
+                    INSERT OR REPLACE INTO movie_credits
+                    (id, actor_id, title, character, popularity, release_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ''', movie)
+                
+                for tv in result['tv']:
+                    cursor.execute('''
+                    INSERT OR REPLACE INTO tv_credits
+                    (id, actor_id, name, character, popularity, first_air_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ''', tv)
+                
+                cursor.execute('UPDATE actors SET raw_popularity = ? WHERE id = ?',
+                               (result['tmdb_popularity'], aid))
+                processed += 1
+            
+            conn.commit()
+            print(f"  Reindexed {processed}/{total} actors")
+        
         conn.close()
         print(f"Reindex complete! {processed} actors updated")
     

@@ -1,0 +1,61 @@
+# Development Docker Compose for Actor-to-Actor Game
+version: '3.8'
+
+services:
+  # React development server
+  frontend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./actor-game/src:/app/src
+      - ./actor-game/public:/app/public
+      - ./actor-game/package.json:/app/package.json
+    environment:
+      - REACT_APP_API_URL=http://localhost:8787
+      - CHOKIDAR_USEPOLLING=true
+    command: npm start
+    restart: unless-stopped
+
+  # Python development environment
+  backend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: python-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./databases:/app/databases
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    working_dir: /app
+    command: python -m flask run --host=0.0.0.0 --port=8000
+    restart: unless-stopped
+
+  # Local Cloudflare Workers development (if needed)
+  workers-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: python-backend
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./cloudflare-worker:/app/cloudflare-worker
+    working_dir: /app/cloudflare-worker
+    command: wrangler dev --port 8787 --host 0.0.0.0
+    restart: unless-stopped
+
+volumes:
+  node_modules:
+  data:
+  logs:
+  databases:
