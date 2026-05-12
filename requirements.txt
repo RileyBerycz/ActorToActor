@@ -8,11 +8,6 @@ schedule>=1.2.0
 pandas>=2.0.0
 tqdm>=4.65.0
 
-# Remove broken/unused dependencies:
-# - sqlite3 (built into Python)
-# - beautifulsoup4 (not needed for core functionality)
-# - pytrends (causing issues, not essential)
-# - pycountry (not essential for core database)
-# - networkx (overkill for basic actor data)
-# - matplotlib (not needed for database service)
-# - numpy (pandas includes what we need)
+# Actor connections graph builder
+networkx>=3.0
+numpy>=1.24.0

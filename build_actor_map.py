@@ -1,4 +1,5 @@
 import os
+import sys
 import sqlite3
 import networkx as nx
 import json
@@ -9,6 +10,7 @@ import pickle
 import gzip
 import time
 from datetime import datetime
+import argparse
 
 # Constants
 REGIONS = ['GLOBAL', 'US', 'UK', 'CA', 'AU', 'FR', 'DE', 'IN', 'KR', 'JP', 'CN']
@@ -22,41 +24,41 @@ DIFFICULTY_CONFIG = {
     'hard': {'min_connections': 4, 'max_connections': 20, 'count': 1000}  # 20 is arbitrary upper bound
 }
 
-def load_actor_data(region):
+def load_actor_data(region, db_path=None):
     """Load actor data from a single SQLite database filtered by region"""
     print(f"Loading actor data for {region}...")
     
-    possible_paths = [
-        "public/actors.db",
-        "actor-game/public/actors.db",
-        "./actors.db"
-    ]
-    
-    db_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            db_path = path
-            print(f"Found database at {path}")
-            break
-    
     if not db_path:
-        print(f"Consolidated actors database not found in any location")
-        
-        legacy_paths = [
-            f"public/actors_{region}.db",
-            f"actor-game/public/actors_{region}.db",
-            f"./actors_{region}.db"
+        possible_paths = [
+            "public/actors.db",
+            "actor-game/public/actors.db",
+            "./actors.db"
         ]
         
-        for path in legacy_paths:
+        for path in possible_paths:
             if os.path.exists(path):
-                print(f"Found legacy database at {path}")
                 db_path = path
+                print(f"Found database at {path}")
                 break
         
         if not db_path:
-            print(f"No database found for {region}")
-            return None
+            print(f"Consolidated actors database not found in any location")
+            
+            legacy_paths = [
+                f"public/actors_{region}.db",
+                f"actor-game/public/actors_{region}.db",
+                f"./actors_{region}.db"
+            ]
+            
+            for path in legacy_paths:
+                if os.path.exists(path):
+                    print(f"Found legacy database at {path}")
+                    db_path = path
+                    break
+            
+            if not db_path:
+                print(f"No database found for {region}")
+                return None
     
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -92,13 +94,13 @@ def load_actor_data(region):
     actor_ids_str = ', '.join(map(str, actor_ids))
     
     movie_credits_df = pd.read_sql(
-        f"SELECT actor_id, id, title, poster_path, popularity FROM movie_credits WHERE actor_id IN ({actor_ids_str})", 
+        f"SELECT actor_id, id, title, popularity FROM movie_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
     # Now load TV credits and include the character field for filtering
     tv_credits_df = pd.read_sql(
-        f"SELECT actor_id, id, name as title, poster_path, popularity, character FROM tv_credits WHERE actor_id IN ({actor_ids_str})", 
+        f"SELECT actor_id, id, name as title, popularity, character FROM tv_credits WHERE actor_id IN ({actor_ids_str})", 
         conn
     )
     
@@ -123,7 +125,7 @@ def load_actor_data(region):
             actors[actor_id]['movie_credits'].append({
                 'id': str(row['id']),
                 'title': row['title'],
-                'poster_path': row['poster_path'],
+                'poster_path': None,
                 'popularity': row['popularity']
             })
     
@@ -133,7 +135,7 @@ def load_actor_data(region):
             actors[actor_id]['tv_credits'].append({
                 'id': str(row['id']),
                 'title': row['title'],
-                'poster_path': row['poster_path'],
+                'poster_path': None,
                 'popularity': row['popularity'],
                 'character': row.get('character')
             })
@@ -365,13 +367,12 @@ def compress_path(path):
     json_str = json.dumps(minimal_path)
     return gzip.compress(json_str.encode('utf-8'))
 
-def create_connection_database(paths_by_difficulty, region="GLOBAL"):
+def create_connection_database(paths_by_difficulty, region="GLOBAL", output_path=None):
     """Create/update SQLite database with actor connections"""
     print(f"Adding {region} connections to database...")
     
-    # Always use the standard path and ensure the directory exists
-    os.makedirs(os.path.dirname(CONNECTION_DB_PATH), exist_ok=True)
-    connection_path = CONNECTION_DB_PATH
+    connection_path = output_path or CONNECTION_DB_PATH
+    os.makedirs(os.path.dirname(connection_path) if os.path.dirname(connection_path) else '.', exist_ok=True)
     
     # Check if database exists
     db_exists = os.path.exists(connection_path)
@@ -422,25 +423,34 @@ def create_connection_database(paths_by_difficulty, region="GLOBAL"):
     print(f"Connection database updated with {region} paths")
 
 def main():
-    # For each region, generate appropriate connections
-    for region in REGIONS_TO_PROCESS:
-        region_actors = load_actor_data(region)
+    parser = argparse.ArgumentParser(description='Build actor connection graph')
+    parser.add_argument('--db', help='Path to actors.db')
+    parser.add_argument('--output', help='Path to output actor_connections.db')
+    args = parser.parse_args()
+    
+    if args.db:
+        # Docker mode: single DB, GLOBAL only
+        region_actors = load_actor_data('GLOBAL', db_path=args.db)
         if region_actors:
             graph = build_actor_graph(region_actors)
-            
-            # Only generate hard paths for GLOBAL region
-            if region == 'GLOBAL':
-                paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
-            else:
-                # For non-GLOBAL regions, only generate easy and normal paths
-                easy_normal_config = {k: v for k, v in DIFFICULTY_CONFIG.items() 
-                                     if k in ['easy', 'normal']}
-                paths = find_paths_by_difficulty(graph, region_actors, easy_normal_config)
-                # Add empty list for hard to maintain structure
-                paths['hard'] = []
+            paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
+            create_connection_database(paths, 'GLOBAL', output_path=args.output)
+    else:
+        # Legacy mode: auto-detect, multi-region
+        for region in REGIONS_TO_PROCESS:
+            region_actors = load_actor_data(region)
+            if region_actors:
+                graph = build_actor_graph(region_actors)
                 
-            # Store with region information
-            create_connection_database(paths, region)
+                if region == 'GLOBAL':
+                    paths = find_paths_by_difficulty(graph, region_actors, DIFFICULTY_CONFIG)
+                else:
+                    easy_normal_config = {k: v for k, v in DIFFICULTY_CONFIG.items() 
+                                         if k in ['easy', 'normal']}
+                    paths = find_paths_by_difficulty(graph, region_actors, easy_normal_config)
+                    paths['hard'] = []
+                    
+                create_connection_database(paths, region, output_path=args.output)
 
 if __name__ == "__main__":
     main()
