@@ -38,14 +38,21 @@ class ActorDatabaseService:
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS actors (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
+            name TEXT,
             popularity REAL,
             profile_path TEXT,
             place_of_birth TEXT,
-            credits_count INTEGER DEFAULT 0,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            credits_count INTEGER,
+            last_updated TEXT,
+            raw_popularity REAL DEFAULT 0
         )
         ''')
+        
+        # Add raw_popularity column if it doesn't exist (for existing DBs)
+        try:
+            cursor.execute('ALTER TABLE actors ADD COLUMN raw_popularity REAL DEFAULT 0')
+        except:
+            pass
         
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS movie_credits (
@@ -183,11 +190,12 @@ class ActorDatabaseService:
                 # Insert/update actor
                 cursor.execute('''
                 INSERT OR REPLACE INTO actors 
-                (id, name, popularity, profile_path, place_of_birth, credits_count, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (id, name, popularity, profile_path, place_of_birth, credits_count, last_updated, raw_popularity)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 ''', (
                     actor_id, name, weighted_popularity, profile_path, 
-                    place_of_birth, len(significant_movies) + len(significant_tv)
+                    place_of_birth, len(significant_movies) + len(significant_tv),
+                    tmdb_popularity
                 ))
                 
                 # Clear old credits for this actor
@@ -251,6 +259,13 @@ class ActorDatabaseService:
         
         processed = 0
         for actor_id, name in actors:
+            # Get fresh person data (for raw popularity)
+            person = self.make_api_request(
+                f"{BASE_URL}/person/{actor_id}",
+                {"api_key": self.api_key}
+            )
+            tmdb_popularity = person.get('popularity', 0) if person else 0
+            
             # Re-fetch credits from TMDB
             movies = self.make_api_request(
                 f"{BASE_URL}/person/{actor_id}/movie_credits",
@@ -303,6 +318,9 @@ class ActorDatabaseService:
                     tv.get('character', ''), tv.get('popularity', 0),
                     tv.get('first_air_date', '')
                 ))
+            
+            # Update raw popularity on the actor record
+            cursor.execute('UPDATE actors SET raw_popularity = ? WHERE id = ?', (tmdb_popularity, actor_id))
             
             processed += 1
             if processed % 100 == 0:

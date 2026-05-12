@@ -103,15 +103,46 @@ function ActorGame({ settings, onReset }) {
     }
   }, [apiCall, settings.excludeMCU]);
 
-  const selectMovie = useCallback((movie) => {
+  const selectMovie = useCallback(async (movie) => {
     setSelectedMovie(movie);
     setPathMovies(prev => ({ ...prev, [movie.id]: movie.title }));
+    const newPath = [...currentPath, movie.id];
+    setCurrentPath(newPath);
+    setAvailableMovies([]);
+    
+    // Check if target actor is in this movie -> auto-complete
+    try {
+      const result = await apiCall(`movies/${movie.id}/has-actor/${targetActor.id}`);
+      if (result.has_actor) {
+        setPathActors(prev => ({ ...prev, [targetActor.id]: targetActor.name }));
+        const fullPath = [...newPath, targetActor.id];
+        setCurrentPath(fullPath);
+        setCurrentActor(targetActor);
+        
+        const validation = await apiCall('game/validate-path', {
+          method: 'POST',
+          body: JSON.stringify({
+            path: fullPath,
+            start_actor_id: startActor.id,
+            target_actor_id: targetActor.id,
+            difficulty: settings.difficulty,
+            exclude_mcu: settings.excludeMCU
+          })
+        });
+        
+        if (validation.valid) {
+          setGameState('won');
+          return;
+        }
+      }
+    } catch (e) {
+      // Auto-complete check failed, fall through to normal actor search
+    }
+    
     setGameMode('selectActor');
     setSearchQuery('');
     setSearchResults([]);
-    setCurrentPath(prev => [...prev, movie.id]);
-    setAvailableMovies([]);
-  }, []);
+  }, [currentPath, targetActor, startActor, settings, apiCall]);
 
   const selectActor = useCallback(async (actor) => {
     const newPath = [...currentPath, actor.id];
@@ -155,13 +186,18 @@ function ActorGame({ settings, onReset }) {
     }
     
     try {
-      const result = await apiCall(`game/find-path?start_id=${startActor.id}&target_id=${targetActor.id}&difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU}`);
-      setOptimalPath(result.path);
-      setHint('Optimal path loaded! Click "Show Solution" to see it.');
+      const result = await apiCall(`game/find-path?start_id=${startActor.id}&target_id=${targetActor.id}`);
+      if (result.path) {
+        setOptimalPath(result.path);
+        const conns = result.length || Math.floor((result.path.length - 1) / 2);
+        setHint(`Optimal path found: ${conns} connection${conns !== 1 ? 's' : ''}! Click "Show Solution" to see it.`);
+      } else {
+        setHint('Try looking for popular movies or actors with many connections!');
+      }
     } catch (error) {
       setHint('Try looking for popular movies or actors with many connections!');
     }
-  }, [startActor, targetActor, settings, optimalPath, apiCall]);
+  }, [startActor, targetActor, optimalPath, apiCall]);
 
   const resetPath = useCallback(() => {
     setCurrentPath([startActor.id]);
@@ -377,6 +413,31 @@ function ActorGame({ settings, onReset }) {
             <div className="victory-title">Connected!</div>
             <div className="victory-detail">{startActor?.name} → {targetActor?.name}</div>
             <div className="victory-path">{connectionCount} connection{connectionCount !== 1 ? 's' : ''}</div>
+          </div>
+        )}
+
+        {/* Show Solution button */}
+        {optimalPath && optimalPath.length > 0 && (
+          <button
+            onClick={() => setShowOptimalPath(!showOptimalPath)}
+            className="action-btn solution"
+          >
+            {showOptimalPath ? 'Hide Solution' : 'Show Solution'}
+          </button>
+        )}
+
+        {/* Solution display */}
+        {showOptimalPath && optimalPath && (
+          <div className="optimal-path-display">
+            <div className="optimal-path-header">Optimal Path ({Math.floor(optimalPath.length / 2)} connections)</div>
+            <div className="optimal-path-items">
+              {optimalPath.map((item, index) => (
+                <span key={index} className={`optimal-item ${item.type}`}>
+                  {item.name || item.title}
+                  {index < optimalPath.length - 1 && <span className="optimal-arrow"> → </span>}
+                </span>
+              ))}
+            </div>
           </div>
         )}
 

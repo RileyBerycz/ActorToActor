@@ -8,6 +8,7 @@ import os
 import sqlite3
 import json
 import random
+from collections import deque
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
@@ -266,34 +267,59 @@ def start_game():
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         
-        # Get popular actors based on difficulty - focus on well-known English-speaking actors
+        # Get popular actors based on difficulty - use raw TMDB popularity for name recognition
         if difficulty == 'easy':
-            min_popularity = 40
-        elif difficulty == 'hard':
+            # Only A-list celebrities (Anne Hathaway, Tom Cruise, etc.)
             min_popularity = 15
+            min_credits = 5
+        elif difficulty == 'hard':
+            # Obscure actors with few credits
+            min_popularity = 3
+            max_popularity = 15
+            min_credits = 2
         else:  # normal
-            min_popularity = 25
-            
-        cursor.execute('''
-        SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
-        FROM actors a
-        INNER JOIN movie_credits mc ON a.id = mc.actor_id
-        WHERE a.popularity >= ? 
-        AND (a.place_of_birth LIKE '%USA%' OR a.place_of_birth LIKE '%UK%' OR a.place_of_birth LIKE '%Canada%' OR a.place_of_birth LIKE '%Australia%' OR a.place_of_birth IS NULL)
-        AND mc.character IS NOT NULL
-        AND mc.character != ''
-        AND mc.character NOT LIKE 'Self%'
-        AND mc.character NOT LIKE 'Himself%'
-        AND mc.character NOT LIKE 'Herself%'
-        AND mc.character NOT LIKE '%Archive%'
-        AND mc.character NOT LIKE '%Reader:%'
-        AND mc.character NOT LIKE '%Narrator%'
-        AND LENGTH(mc.character) > 2
-        GROUP BY a.id, a.name, a.profile_path
-        HAVING COUNT(mc.id) >= 3
-        ORDER BY a.popularity DESC 
-        LIMIT 100
-        ''', (min_popularity,))
+            # Well-known actors (Tom Hardy, Brad Pitt, etc.)
+            min_popularity = 10
+            min_credits = 3
+        
+        # Use raw_popularity if available, fall back to weighted popularity for old DBs
+        pop_col = 'COALESCE(NULLIF(a.raw_popularity, 0), a.popularity)'
+        
+        params = [min_credits]
+        
+        if difficulty == 'hard':
+            cursor.execute(f'''
+            SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
+            FROM actors a
+            INNER JOIN movie_credits mc ON a.id = mc.actor_id
+            WHERE {pop_col} >= ? AND {pop_col} < ?
+            AND mc.character IS NOT NULL AND mc.character != ''
+            AND mc.character NOT LIKE 'Self%' AND mc.character NOT LIKE 'Himself%'
+            AND mc.character NOT LIKE 'Herself%' AND mc.character NOT LIKE '%Archive%'
+            AND mc.character NOT LIKE '%Reader:%' AND mc.character NOT LIKE '%Narrator%'
+            AND LENGTH(mc.character) > 2
+            GROUP BY a.id, a.name, a.profile_path
+            HAVING COUNT(mc.id) >= ?
+            ORDER BY {pop_col} DESC
+            LIMIT 100
+            ''', (min_popularity, max_popularity, min_credits))
+        else:
+            cursor.execute(f'''
+            SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
+            FROM actors a
+            INNER JOIN movie_credits mc ON a.id = mc.actor_id
+            WHERE {pop_col} >= ? 
+            AND (a.place_of_birth LIKE '%USA%' OR a.place_of_birth LIKE '%UK%' OR a.place_of_birth LIKE '%Canada%' OR a.place_of_birth LIKE '%Australia%' OR a.place_of_birth IS NULL)
+            AND mc.character IS NOT NULL AND mc.character != ''
+            AND mc.character NOT LIKE 'Self%' AND mc.character NOT LIKE 'Himself%'
+            AND mc.character NOT LIKE 'Herself%' AND mc.character NOT LIKE '%Archive%'
+            AND mc.character NOT LIKE '%Reader:%' AND mc.character NOT LIKE '%Narrator%'
+            AND LENGTH(mc.character) > 2
+            GROUP BY a.id, a.name, a.profile_path
+            HAVING COUNT(mc.id) >= ?
+            ORDER BY {pop_col} DESC
+            LIMIT 100
+            ''', (min_popularity, min_credits))
         
         candidates = cursor.fetchall()
         if len(candidates) < 2:
@@ -437,6 +463,19 @@ def get_movie_cast(movie_id):
         
         conn.close()
         return jsonify({"cast": cast})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/movies/<int:movie_id>/has-actor/<int:actor_id>')
+def movie_has_actor(movie_id, actor_id):
+    """Check if an actor appears in a movie (for auto-complete)"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM movie_credits WHERE id = ? AND actor_id = ?', (movie_id, actor_id))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return jsonify({"has_actor": count > 0})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -639,8 +678,82 @@ def find_optimal_path():
                 return jsonify({"path": optimal_path, "precomputed": True})
             conn.close()
         
-        # If no pre-computed path found, return error for now
-        return jsonify({"error": "No optimal path available for these actors"}), 404
+        # Fallback: real-time BFS shortest path
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Build actor connections graph
+        cursor.execute('''
+        SELECT m1.actor_id, m2.actor_id, m1.id, m1.title, m2.character
+        FROM movie_credits m1
+        JOIN movie_credits m2 ON m1.id = m2.id AND m1.actor_id < m2.actor_id
+        ORDER BY m1.actor_id
+        ''')
+        
+        graph = {}
+        edge_movies = {}
+        for a1, a2, movie_id, title, char in cursor.fetchall():
+            graph.setdefault(a1, []).append(a2)
+            graph.setdefault(a2, []).append(a1)
+            key = (a1, a2) if a1 < a2 else (a2, a1)
+            if key not in edge_movies:
+                edge_movies[key] = (movie_id, title)
+        
+        # BFS to find shortest path
+        visited = {start_id: None}
+        q = deque([start_id])
+        found = False
+        while q and not found:
+            current = q.popleft()
+            for neighbor in graph.get(current, []):
+                if neighbor not in visited:
+                    visited[neighbor] = current
+                    if neighbor == target_id:
+                        found = True
+                        break
+                    q.append(neighbor)
+        
+        if not found:
+            conn.close()
+            return jsonify({"error": "No path found between these actors"}), 404
+        
+        # Reconstruct path: actor -> movie -> actor -> movie -> ... -> actor
+        path_ids = []
+        node = target_id
+        while node is not None:
+            path_ids.append(node)
+            node = visited[node]
+        path_ids.reverse()
+        
+        # Build full path with movie details
+        path = []
+        for i in range(len(path_ids) - 1):
+            a1, a2 = path_ids[i], path_ids[i+1]
+            key = (a1, a2) if a1 < a2 else (a2, a1)
+            movie_id, movie_title = edge_movies.get(key, (None, "Unknown"))
+            
+            cursor.execute('SELECT name, profile_path FROM actors WHERE id=?', (a1,))
+            actor = cursor.fetchone()
+            path.append({
+                "type": "actor", "id": a1,
+                "name": actor[0] if actor else "Unknown",
+                "profile_path": actor[1] if actor else None
+            })
+            path.append({
+                "type": "movie", "id": movie_id,
+                "title": movie_title
+            })
+        
+        cursor.execute('SELECT name, profile_path FROM actors WHERE id=?', (target_id,))
+        target = cursor.fetchone()
+        path.append({
+            "type": "actor", "id": target_id,
+            "name": target[0] if target else "Unknown",
+            "profile_path": target[1] if target else None
+        })
+        
+        conn.close()
+        return jsonify({"path": path, "precomputed": False, "length": len(path_ids) - 1})
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
