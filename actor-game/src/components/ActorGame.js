@@ -216,324 +216,178 @@ function ActorGame({ settings, onReset }) {
     );
   }
 
+  const connectionCount = Math.floor(currentPath.length / 2);
+  const maxConnections = settings.difficulty === 'easy' ? 2 : settings.difficulty === 'normal' ? 4 : 6;
+
   return (
     <div className="actor-game">
-      {/* Game Header */}
-      <div className="game-header">
-        <div className="game-challenge">
-          <div className="actor-card start">
-            <img 
-              src={getImageUrl(startActor?.profile_path)} 
-              alt={startActor?.name}
-              onError={(e) => { e.target.src = defaultImageUrl; }}
-            />
-            <h3>{startActor?.name}</h3>
+      {/* Challenge bar */}
+      <div className="challenge-bar">
+        <div className="challenge-actors">
+          <div className="challenge-actor">
+            <img src={getImageUrl(startActor?.profile_path)} alt={startActor?.name} />
+            <div className="challenge-name">{startActor?.name}</div>
           </div>
-          
-          <div className="path-arrow">
-            <span>Connect to</span>
-            <div className="arrow">→</div>
+          <div className="challenge-vs">
+            <div className="vs-line"></div>
+            <div className="vs-text">vs</div>
+            <div className="vs-line"></div>
           </div>
-          
-          <div className="actor-card target">
-            <img 
-              src={getImageUrl(targetActor?.profile_path)} 
-              alt={targetActor?.name}
-              onError={(e) => { e.target.src = defaultImageUrl; }}
-            />
-            <h3>{targetActor?.name}</h3>
+          <div className="challenge-actor target">
+            <img src={getImageUrl(targetActor?.profile_path)} alt={targetActor?.name} />
+            <div className="challenge-name">{targetActor?.name}</div>
           </div>
         </div>
-        
-        <div className="game-info">
-          <div className="difficulty">
-            {settings.difficulty} 
-            {settings.difficulty === 'easy' && ' (max 2 connections)'}
-            {settings.difficulty === 'normal' && ' (max 4 connections)'}
-            {settings.difficulty === 'hard' && ' (max 6 connections)'}
-          </div>
-          <div className="path-length">Connections: {Math.floor(currentPath.length / 2)}</div>
-          {settings.excludeMCU && <div className="mcu-filter">MCU Excluded</div>}
+        <div className="challenge-meta">
+          <span className="meta-difficulty">{settings.difficulty}</span>
+          <span className="meta-connections">{connectionCount}/{maxConnections}</span>
+          {settings.excludeMCU && <span className="meta-mcu">No MCU</span>}
         </div>
       </div>
 
-      {/* Current Path Display */}
-      <div className="current-path">
-        <div className="path-header">
-          <h3>Your Path</h3>
-          <div className="path-stats">
-            <span className="connections-count">{Math.floor(currentPath.length / 2)} connections</span>
-            <span className="difficulty-indicator">{settings.difficulty}</span>
-          </div>
-        </div>
-        
-          <div className="path-visualization">
-            {currentPath.length > 0 && (
-              <div className="path-chain">
-                {/* Start Actor */}
-                <div className="path-node actor start">
-                  <div className="node-avatar">
-                    <img 
-                      src={getImageUrl(startActor?.profile_path)} 
-                      alt={startActor?.name}
-                      onError={(e) => { e.target.src = defaultImageUrl; }}
-                    />
-                  </div>
-                  <div className="node-label">{startActor?.name}</div>
-                  <div className="path-role start">START</div>
-                </div>
+      {/* Path chain */}
+      <div className="path-chain-area">
+        {currentPath.length > 0 && (
+          <div className="path-chain">
+            <div className="chain-node start">
+              <div className="chain-avatar">
+                <img src={getImageUrl(startActor?.profile_path)} alt={startActor?.name} />
+              </div>
+            </div>
 
-                {/* Arrow between start and first movie */}
-                {currentPath.length > 1 && (
-                  <div className="path-connector">
-                    <div className="connector-line"></div>
-                  </div>
-                )}
-                
-                {/* Path items: movie → actor → movie → actor ... */}
-                {currentPath.slice(1).map((item, index) => (
-                  index % 2 === 0 ? (
-                    <div key={index} className="path-segment movie">
-                      <div className="path-node movie">
-                        <div className="node-icon">🎬</div>
-                        <div className="node-label">{pathMovies[item] || `Movie ${item}`}</div>
-                      </div>
-                      {index < currentPath.length - 2 && (
-                        <div className="path-connector">
-                          <div className="connector-line"></div>
-                        </div>
-                      )}
-                    </div>
+            {currentPath.slice(1).map((item, index) => (
+              <div key={index} className="chain-link">
+                <div className="chain-arrow">→</div>
+                <div className={`chain-node ${index % 2 === 0 ? 'movie' : 'actor'}`}>
+                  {index % 2 === 0 ? (
+                    <div className="chain-movie-label">{pathMovies[item] || `Movie ${item}`}</div>
                   ) : (
-                    <div key={index} className="path-segment actor">
-                      <div className="path-node actor">
-                        <div className="node-label path-actor-name">{pathActors[item] || `Actor ${item}`}</div>
-                      </div>
-                      {/* Arrow between this actor and next movie, if any */}
-                      {index < currentPath.length - 2 && (
-                        <div className="path-connector">
-                          <div className="connector-line"></div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                ))}
-                
-                {/* Target indicator */}
-                {gameState === 'playing' && currentPath.length > 1 && (
-                  <div className="path-connector">
-                    <div className="connector-line"></div>
+                    <div className="chain-actor-label">{pathActors[item] || `Actor ${item}`}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {gameState === 'playing' && (
+              <div className="chain-link">
+                <div className="chain-arrow">→</div>
+                <div className="chain-node target">
+                  <div className="chain-avatar">
+                    <img src={getImageUrl(targetActor?.profile_path)} alt={targetActor?.name} />
                   </div>
-                )}
-                {gameState === 'playing' && (
-                  <div className="path-node target">
-                    <div className="node-avatar">
-                      <img 
-                        src={getImageUrl(targetActor?.profile_path)} 
-                        alt={targetActor?.name}
-                        onError={(e) => { e.target.src = defaultImageUrl; }}
-                      />
-                    </div>
-                    <div className="node-label">{targetActor?.name}</div>
-                    <div className="target-badge">TARGET</div>
-                  </div>
-                )}
+                  <div className="chain-target-badge">TARGET</div>
+                </div>
               </div>
             )}
           </div>
+        )}
       </div>
 
-      {/* Game Controls */}
-      <div className="game-controls">
-        {gameState === 'playing' && (
-          <>
-            {gameMode === 'selectMovie' && (
-              <div className="movie-selection">
-                <div className="step-header">
-                  <div className="step-number">Step {Math.floor(currentPath.length / 2) + 1}</div>
-                  <h3>Choose a movie starring <span className="actor-highlight">{currentActor?.name}</span></h3>
-                </div>
-                
-                <div className="search-box">
-                  <input
-                    type="text"
-                    placeholder={`Search for movies with ${currentActor?.name}...`}
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="movie-search"
-                    autoFocus
-                  />
-                  <div className="search-icon">🎬</div>
-                </div>
-                
-                {searchQuery.length > 0 && (
-                  <div className="search-results movies">
-                    {availableMovies
-                      .filter(movie => 
-                        movie.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        (movie.character && movie.character.toLowerCase().includes(searchQuery.toLowerCase()))
-                      )
-                      .slice(0, 8)
-                      .map(movie => (
-                        <div 
-                          key={movie.id} 
-                          className="movie-card clickable"
-                          onClick={() => selectMovie(movie)}
-                        >
-                          <div className="movie-info">
-                            <div className="movie-title">{movie.title}</div>
-                            <div className="movie-details">
-                              <span className="movie-character">as {movie.character}</span>
-                              <span className="movie-year">
-                                ({movie.release_date ? new Date(movie.release_date).getFullYear() : 'N/A'})
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    }
-                    {availableMovies.filter(movie => 
-                      movie.title.toLowerCase().includes(searchQuery.toLowerCase())
-                    ).length === 0 && searchQuery.length > 2 && (
-                      <div className="no-results">
-                        No movies found matching "{searchQuery}"
+      {/* Interaction area */}
+      <div className="interaction-area">
+        {gameState === 'playing' && gameMode === 'selectMovie' && (
+          <div className="interaction-card">
+            <div className="interaction-prompt">
+              Pick a movie starring <span className="accent">{currentActor?.name}</span>
+            </div>
+            <div className="search-field">
+              <input
+                type="text"
+                placeholder="Search movies..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="search-results-list">
+              {searchQuery.length > 0 ? (
+                availableMovies
+                  .filter(m => m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    (m.character && m.character.toLowerCase().includes(searchQuery.toLowerCase())))
+                  .slice(0, 6)
+                  .map(movie => (
+                    <div key={movie.id} className="result-item" onClick={() => selectMovie(movie)}>
+                      <div className="result-title">{movie.title}</div>
+                      <div className="result-sub">
+                        <span>as {movie.character}</span>
+                        <span>{movie.release_date ? new Date(movie.release_date).getFullYear() : ''}</span>
                       </div>
-                    )}
-                  </div>
-                )}
-                
-                {searchQuery.length === 0 && (
-                  <div className="search-hint">
-                    💡 Start typing to search for movies starring {currentActor?.name}
-                  </div>
-                )}
-              </div>
-            )}
+                    </div>
+                  ))
+              ) : (
+                <div className="result-hint">Type to search movies starring {currentActor?.name}</div>
+              )}
+              {searchQuery.length > 2 && availableMovies.filter(m =>
+                m.title.toLowerCase().includes(searchQuery.toLowerCase())
+              ).length === 0 && (
+                <div className="result-empty">No movies match "{searchQuery}"</div>
+              )}
+            </div>
+          </div>
+        )}
 
-            {gameMode === 'selectActor' && selectedMovie && (
-              <div className="actor-selection">
-                <div className="step-header">
-                  <div className="step-number">Step {Math.floor(currentPath.length / 2) + 1}</div>
-                  <h3>Who else appeared in <span className="movie-highlight">"{selectedMovie.title}"</span>?</h3>
-                </div>
-                
-                <div className="search-box">
-                  <input
-                    type="text"
-                    placeholder="Type actor's name..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="actor-search"
-                    autoFocus
-                  />
-                  <div className="search-icon">🎭</div>
-                </div>
-                
-                {searchQuery.length > 1 && (
-                  <div className="search-results actors">
-                    {searchResults.length > 0 ? (
-                      searchResults.slice(0, 6).map(actor => (
-                        <div 
-                          key={actor.id}
-                          className="actor-result clickable"
-                          onClick={() => selectActor(actor)}
-                        >
-                          <div className="actor-avatar">
-                            <img 
-                              src={getImageUrl(actor.profile_path)} 
-                              alt={actor.name}
-                              onError={(e) => { e.target.src = defaultImageUrl; }}
-                            />
-                          </div>
-                          <div className="actor-info">
-                            <span className="actor-name">{actor.name}</span>
-                            {actor.id === targetActor?.id && (
-                              <span className="target-indicator">🎯 TARGET!</span>
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="no-results">
-                        No actors found matching "{searchQuery}"
+        {gameState === 'playing' && gameMode === 'selectActor' && selectedMovie && (
+          <div className="interaction-card">
+            <div className="interaction-prompt">
+              Who else was in <span className="accent">{selectedMovie.title}</span>?
+            </div>
+            <div className="search-field">
+              <input
+                type="text"
+                placeholder="Search actors..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="search-results-list">
+              {searchQuery.length > 1 ? (
+                searchResults.length > 0 ? (
+                  searchResults.slice(0, 6).map(actor => (
+                    <div key={actor.id} className="result-item actor" onClick={() => selectActor(actor)}>
+                      <div className="result-avatar">
+                        <img src={getImageUrl(actor.profile_path)} alt={actor.name} />
                       </div>
-                    )}
-                  </div>
-                )}
-                
-                {searchQuery.length <= 1 && (
-                  <div className="search-hint">
-                    💡 Start typing to search for actors who appeared in "{selectedMovie.title}"
-                  </div>
-                )}
-              </div>
-            )}
-          </>
+                      <div className="result-info">
+                        <div className="result-title">{actor.name}</div>
+                        {actor.id === targetActor?.id && (
+                          <div className="result-target">TARGET</div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="result-empty">No actors match "{searchQuery}"</div>
+                )
+              ) : (
+                <div className="result-hint">Type to search actors in {selectedMovie.title}</div>
+              )}
+            </div>
+          </div>
         )}
 
         {gameState === 'won' && (
-          <div className="victory">
-            <h2>🎉 Congratulations! 🎉</h2>
-            <p>You successfully connected {startActor?.name} to {targetActor?.name}!</p>
-            <p>Your path used {Math.floor(currentPath.length / 2)} connections.</p>
+          <div className="interaction-card victory-card">
+            <div className="victory-emoji">🎉</div>
+            <div className="victory-title">Connected!</div>
+            <div className="victory-detail">{startActor?.name} → {targetActor?.name}</div>
+            <div className="victory-path">{connectionCount} connection{connectionCount !== 1 ? 's' : ''}</div>
           </div>
         )}
-      </div>
 
-      {/* Action Buttons */}
-      <div className="action-buttons">
-        <button onClick={getHint} className="hint-button">
-          Get Hint
-        </button>
-        
-        {optimalPath && (
-          <button 
-            onClick={() => setShowOptimalPath(!showOptimalPath)} 
-            className="solution-button"
-          >
-            {showOptimalPath ? 'Hide Solution' : 'Show Solution'}
-          </button>
-        )}
-        
-        <button onClick={resetPath} className="reset-path-button">
-          Reset Path
-        </button>
-        
-        <button onClick={startNewGame} className="new-game-button">
-          New Game
-        </button>
-        
-        <button onClick={onReset} className="back-button">
-          Back to Menu
-        </button>
-      </div>
-
-      {/* Hint Display */}
-      {hint && (
-        <div className="hint-display">
-          <div className="hint-content">
-            <span className="hint-icon">💡</span>
-            <span>{hint}</span>
-            <button onClick={() => setHint(null)} className="close-hint">×</button>
-          </div>
+        {/* Action buttons */}
+        <div className="action-row">
+          <button onClick={getHint} className="action-btn hint">Hint</button>
+          <button onClick={resetPath} className="action-btn reset">Reset</button>
+          <button onClick={startNewGame} className="action-btn new">New Game</button>
+          <button onClick={onReset} className="action-btn back">Back</button>
         </div>
-      )}
+      </div>
 
-      {/* Optimal Path Display */}
-      {showOptimalPath && optimalPath && (
-        <div className="optimal-path-display">
-          <h3>Optimal Solution:</h3>
-          <div className="optimal-path">
-            {optimalPath.map((item, index) => (
-              <div key={index} className={`path-item ${index % 2 === 0 ? 'actor' : 'movie'}`}>
-                {index % 2 === 0 ? 
-                  `Actor: ${item.n || item.name || 'Unknown'}` : 
-                  `Movie: ${item.n || item.title || 'Unknown'}`
-                }
-                {index < optimalPath.length - 1 && <span className="path-arrow">→</span>}
-              </div>
-            ))}
-          </div>
+      {hint && (
+        <div className="hint-toast">
+          <span>{hint}</span>
+          <button onClick={() => setHint(null)}>×</button>
         </div>
       )}
     </div>
