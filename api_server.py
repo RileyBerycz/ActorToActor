@@ -267,60 +267,34 @@ def start_game():
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         
-        # Get popular actors based on difficulty using raw TMDB popularity + credit count
-        # raw_popularity reflects current TMDB buzz; credit count reflects career depth
+        # Get actors based on difficulty using weighted popularity + credit count
+        # Higher credit count threshold for easy = established careers only
         if difficulty == 'easy':
-            # Well-known actors with lots of credits (Tom Cruise, Brad Pitt, Anne Hathaway)
-            min_popularity = 8
+            min_popularity = 25
             min_credits = 8
         elif difficulty == 'hard':
-            # Obscure actors with few credits, or low popularity
-            max_popularity = 8
-            min_popularity = 0
+            min_popularity = 10
             min_credits = 2
         else:  # normal
-            # Recognizable actors with decent filmography
-            min_popularity = 8
+            min_popularity = 15
             min_credits = 4
         
-        # Use raw_popularity if available, fall back to weighted popularity for old DBs
-        pop_col = 'COALESCE(NULLIF(a.raw_popularity, 0), a.popularity)'
-        
-        params = [min_credits]
-        
-        if difficulty == 'hard':
-            cursor.execute(f'''
-            SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
-            FROM actors a
-            INNER JOIN movie_credits mc ON a.id = mc.actor_id
-            WHERE {pop_col} >= ? AND {pop_col} < ?
-            AND mc.character IS NOT NULL AND mc.character != ''
-            AND mc.character NOT LIKE 'Self%' AND mc.character NOT LIKE 'Himself%'
-            AND mc.character NOT LIKE 'Herself%' AND mc.character NOT LIKE '%Archive%'
-            AND mc.character NOT LIKE '%Reader:%' AND mc.character NOT LIKE '%Narrator%'
-            AND LENGTH(mc.character) > 2
-            GROUP BY a.id, a.name, a.profile_path
-            HAVING COUNT(mc.id) >= ?
-            ORDER BY {pop_col} DESC
-            LIMIT 100
-            ''', (min_popularity, max_popularity, min_credits))
-        else:
-            cursor.execute(f'''
-            SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
-            FROM actors a
-            INNER JOIN movie_credits mc ON a.id = mc.actor_id
-            WHERE {pop_col} >= ? 
-            AND (a.place_of_birth LIKE '%USA%' OR a.place_of_birth LIKE '%UK%' OR a.place_of_birth LIKE '%Canada%' OR a.place_of_birth LIKE '%Australia%' OR a.place_of_birth IS NULL)
-            AND mc.character IS NOT NULL AND mc.character != ''
-            AND mc.character NOT LIKE 'Self%' AND mc.character NOT LIKE 'Himself%'
-            AND mc.character NOT LIKE 'Herself%' AND mc.character NOT LIKE '%Archive%'
-            AND mc.character NOT LIKE '%Reader:%' AND mc.character NOT LIKE '%Narrator%'
-            AND LENGTH(mc.character) > 2
-            GROUP BY a.id, a.name, a.profile_path
-            HAVING COUNT(mc.id) >= ?
-            ORDER BY {pop_col} DESC
-            LIMIT 100
-            ''', (min_popularity, min_credits))
+        cursor.execute('''
+        SELECT DISTINCT a.id, a.name, a.profile_path, COUNT(mc.id) as credit_count
+        FROM actors a
+        INNER JOIN movie_credits mc ON a.id = mc.actor_id
+        WHERE a.popularity >= ? 
+        AND (a.place_of_birth LIKE '%USA%' OR a.place_of_birth LIKE '%UK%' OR a.place_of_birth LIKE '%Canada%' OR a.place_of_birth LIKE '%Australia%' OR a.place_of_birth IS NULL)
+        AND mc.character IS NOT NULL AND mc.character != ''
+        AND mc.character NOT LIKE 'Self%' AND mc.character NOT LIKE 'Himself%'
+        AND mc.character NOT LIKE 'Herself%' AND mc.character NOT LIKE '%Archive%'
+        AND mc.character NOT LIKE '%Reader:%' AND mc.character NOT LIKE '%Narrator%'
+        AND LENGTH(mc.character) > 2
+        GROUP BY a.id, a.name, a.profile_path
+        HAVING COUNT(mc.id) >= ?
+        ORDER BY a.popularity DESC
+        LIMIT 100
+        ''', (min_popularity, min_credits))
         
         candidates = cursor.fetchall()
         if len(candidates) < 2:
