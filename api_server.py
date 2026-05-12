@@ -267,20 +267,21 @@ def start_game():
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         
-        # Get popular actors based on difficulty - use raw TMDB popularity for name recognition
+        # Get popular actors based on difficulty using raw TMDB popularity + credit count
+        # raw_popularity reflects current TMDB buzz; credit count reflects career depth
         if difficulty == 'easy':
-            # Only A-list celebrities (Anne Hathaway, Tom Cruise, etc.)
-            min_popularity = 15
-            min_credits = 5
+            # Well-known actors with lots of credits (Tom Cruise, Brad Pitt, Anne Hathaway)
+            min_popularity = 8
+            min_credits = 8
         elif difficulty == 'hard':
-            # Obscure actors with few credits
-            min_popularity = 3
-            max_popularity = 15
+            # Obscure actors with few credits, or low popularity
+            max_popularity = 8
+            min_popularity = 0
             min_credits = 2
         else:  # normal
-            # Well-known actors (Tom Hardy, Brad Pitt, etc.)
-            min_popularity = 10
-            min_credits = 3
+            # Recognizable actors with decent filmography
+            min_popularity = 8
+            min_credits = 4
         
         # Use raw_popularity if available, fall back to weighted popularity for old DBs
         pop_col = 'COALESCE(NULLIF(a.raw_popularity, 0), a.popularity)'
