@@ -503,11 +503,11 @@ def validate_path():
         exclude_mcu = data.get('exclude_mcu', False)
         
         if not path or len(path) < 3:
-            return jsonify({"valid": False, "error": "Path too short"}), 400
+            return jsonify({"valid": False, "error": "Path too short"})
             
         # Validate path structure: actor -> movie -> actor -> movie -> ... -> actor
         if len(path) % 2 == 0:
-            return jsonify({"valid": False, "error": "Path must end with an actor"}), 400
+            return jsonify({"valid": False, "error": "Path must end with an actor"})
             
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
@@ -525,7 +525,8 @@ def validate_path():
             ''', (actor_id, movie_id))
             
             if cursor.fetchone()[0] == 0:
-                return jsonify({"valid": False, "error": f"Actor {actor_id} not in movie {movie_id}"}), 400
+                conn.close()
+                return jsonify({"valid": False, "error": f"Actor {actor_id} not in movie {movie_id}"})
                 
             # Check if next actor appears in same movie
             cursor.execute('''
@@ -534,22 +535,27 @@ def validate_path():
             ''', (next_actor_id, movie_id))
             
             if cursor.fetchone()[0] == 0:
-                return jsonify({"valid": False, "error": f"Actor {next_actor_id} not in movie {movie_id}"}), 400
+                conn.close()
+                return jsonify({"valid": False, "error": f"Actor {next_actor_id} not in movie {movie_id}"})
         
         # Check if path starts and ends correctly
         if path[0] != start_actor_id or path[-1] != target_actor_id:
-            return jsonify({"valid": False, "error": "Path doesn't connect start and target actors"}), 400
+            conn.close()
+            return jsonify({"valid": False, "error": "Path doesn't connect start and target actors"})
             
         # Calculate path length (number of movie connections)
         path_length = (len(path) - 1) // 2
         
         # Check difficulty requirements
         if difficulty == 'easy' and path_length > 2:
-            return jsonify({"valid": False, "error": "Easy mode allows maximum 2 connections"}), 400
+            conn.close()
+            return jsonify({"valid": False, "error": "Easy mode allows maximum 2 connections"})
         elif difficulty == 'normal' and path_length > 4:
-            return jsonify({"valid": False, "error": "Normal mode allows maximum 4 connections"}), 400
+            conn.close()
+            return jsonify({"valid": False, "error": "Normal mode allows maximum 4 connections"})
         elif difficulty == 'hard' and path_length > 6:
-            return jsonify({"valid": False, "error": "Hard mode allows maximum 6 connections"}), 400
+            conn.close()
+            return jsonify({"valid": False, "error": "Hard mode allows maximum 6 connections"})
             
         conn.close()
         
@@ -560,7 +566,7 @@ def validate_path():
         })
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"valid": False, "error": str(e)})
 
 
 @app.route('/api/game/find-path')

@@ -26,6 +26,8 @@ function ActorGame({ settings, onReset }) {
   const [loadingMessage, setLoadingMessage] = useState('Loading game...');
   const [gameMode, setGameMode] = useState('selectMovie');
   const [selectedMovie, setSelectedMovie] = useState(null);
+  const [pathMovies, setPathMovies] = useState({});
+  const [pathActors, setPathActors] = useState({});
   
   const BASE_IMG_URL = "https://image.tmdb.org/t/p/";
   const defaultImageUrl = "/placeholder-actor.png";
@@ -98,6 +100,7 @@ function ActorGame({ settings, onReset }) {
 
   const selectMovie = useCallback((movie) => {
     setSelectedMovie(movie);
+    setPathMovies(prev => ({ ...prev, [movie.id]: movie.title }));
     setGameMode('selectActor');
     setSearchQuery('');
     setSearchResults([]);
@@ -107,6 +110,7 @@ function ActorGame({ settings, onReset }) {
 
   const selectActor = useCallback(async (actor) => {
     const newPath = [...currentPath, actor.id];
+    setPathActors(prev => ({ ...prev, [actor.id]: actor.name }));
     setCurrentPath(newPath);
     setCurrentActor(actor);
     setSelectedMovie(null);
@@ -131,7 +135,7 @@ function ActorGame({ settings, onReset }) {
         if (validation.valid) {
           setGameState('won');
         } else {
-          setError('Invalid path: ' + validation.error);
+          setError('Invalid path: ' + (validation.error || 'Unknown error'));
         }
       } catch (error) {
         setError('Error validating your solution');
@@ -263,56 +267,65 @@ function ActorGame({ settings, onReset }) {
           </div>
         </div>
         
-        <div className="path-visualization">
-          {currentPath.length > 0 && (
-            <div className="path-chain">
-              {/* Start Actor */}
-              <div className="path-node actor start">
-                <div className="node-avatar">
-                  <img 
-                    src={getImageUrl(startActor?.profile_path)} 
-                    alt={startActor?.name}
-                    onError={(e) => { e.target.src = defaultImageUrl; }}
-                  />
+          <div className="path-visualization">
+            {currentPath.length > 0 && (
+              <div className="path-chain">
+                {/* Start Actor */}
+                <div className="path-node actor start">
+                  <div className="node-avatar">
+                    <img 
+                      src={getImageUrl(startActor?.profile_path)} 
+                      alt={startActor?.name}
+                      onError={(e) => { e.target.src = defaultImageUrl; }}
+                    />
+                  </div>
+                  <div className="node-label">{startActor?.name}</div>
+                  <div className="path-role start">START</div>
                 </div>
-                <div className="node-label">{startActor?.name}</div>
-              </div>
-              
-              {/* Path items */}
-              {currentPath.slice(1).map((item, index) => (
-                <div key={index} className="path-segment">
+
+                {/* Arrow between start and first movie */}
+                {currentPath.length > 1 && (
                   <div className="path-connector">
                     <div className="connector-line"></div>
                   </div>
-                  
-                  {index % 2 === 0 ? (
-                    // Movie
-                    <div className="path-node movie">
-                      <div className="node-icon">🎬</div>
-                      <div className="node-label">{selectedMovie?.title || `Movie ${item}`}</div>
+                )}
+                
+                {/* Path items: movie → actor → movie → actor ... */}
+                {currentPath.slice(1).map((item, index) => (
+                  index % 2 === 0 ? (
+                    <div key={index} className="path-segment movie">
+                      <div className="path-node movie">
+                        <div className="node-icon">🎬</div>
+                        <div className="node-label">{pathMovies[item] || `Movie ${item}`}</div>
+                      </div>
+                      {index < currentPath.length - 2 && (
+                        <div className="path-connector">
+                          <div className="connector-line"></div>
+                        </div>
+                      )}
                     </div>
                   ) : (
-                    // Actor
-                    <div className="path-node actor">
-                      <div className="node-avatar">
-                        <img 
-                          src={getImageUrl(currentActor?.profile_path)} 
-                          alt={currentActor?.name}
-                          onError={(e) => { e.target.src = defaultImageUrl; }}
-                        />
+                    <div key={index} className="path-segment actor">
+                      <div className="path-node actor">
+                        <div className="node-label path-actor-name">{pathActors[item] || `Actor ${item}`}</div>
                       </div>
-                      <div className="node-label">{currentActor?.name}</div>
+                      {/* Arrow between this actor and next movie, if any */}
+                      {index < currentPath.length - 2 && (
+                        <div className="path-connector">
+                          <div className="connector-line"></div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
-              
-              {/* Next step indicator */}
-              {gameState === 'playing' && (
-                <div className="path-segment next">
+                  )
+                ))}
+                
+                {/* Target indicator */}
+                {gameState === 'playing' && currentPath.length > 1 && (
                   <div className="path-connector">
-                    <div className="connector-line dashed"></div>
+                    <div className="connector-line"></div>
                   </div>
+                )}
+                {gameState === 'playing' && (
                   <div className="path-node target">
                     <div className="node-avatar">
                       <img 
@@ -324,11 +337,10 @@ function ActorGame({ settings, onReset }) {
                     <div className="node-label">{targetActor?.name}</div>
                     <div className="target-badge">TARGET</div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                )}
+              </div>
+            )}
+          </div>
       </div>
 
       {/* Game Controls */}
