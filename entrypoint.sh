@@ -29,12 +29,47 @@ elif [ ! -f /app/data/actor_connections.db ]; then
     BUILD_CONNECTIONS="yes"
 fi
 
-# Build actor connections after seed completes (background)
+# Reindex credits if DB has old-format data (fewer credits than new 50-cap allows)
+# Detected by checking if Brad Pitt (popular actor) has < 30 movie credits
+REINDEX_NEEDED="no"
+if [ "$ACTOR_COUNT" -ge 2000 ] && [ -f /app/data/actors.db ]; then
+    BP_COUNT=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('/app/data/actors.db')
+    c = conn.execute('SELECT COUNT(*) FROM movie_credits WHERE actor_id=287')
+    print(c.fetchone()[0])
+    conn.close()
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+    if [ "$BP_COUNT" -lt 30 ]; then
+        echo "Brad Pitt has only $BP_COUNT credits (expected 30+), reindexing all actors..."
+        REINDEX_NEEDED="yes"
+        BUILD_CONNECTIONS="yes"
+    else
+        echo "Credits look current ($BP_COUNT credits for Brad Pitt)"
+    fi
+fi
+
+# Reindex credits for existing actors if needed (background)
+if [ "$REINDEX_NEEDED" = "yes" ]; then
+    echo "Reindexing credits for all actors (logs: /app/data/reindex.log)..."
+    python actor_service.py reindex > /app/data/reindex.log 2>&1 &
+    REINDEX_PID=$!
+    echo "Reindex started (PID: $REINDEX_PID)"
+fi
+
+# Build actor connections after seed/reindex completes (background)
 if [ "$BUILD_CONNECTIONS" = "yes" ]; then
     (
         if [ -n "$SEED_PID" ]; then
             echo "Waiting for seed (PID: $SEED_PID) to finish before building connections..."
             wait $SEED_PID 2>/dev/null || true
+        fi
+        if [ -n "$REINDEX_PID" ]; then
+            echo "Waiting for reindex (PID: $REINDEX_PID) to finish before building connections..."
+            wait $REINDEX_PID 2>/dev/null || true
         fi
         echo "Building actor connections graph (logs: /app/data/build_connections.log)..."
         python build_actor_map.py --db /app/data/actors.db --output /app/data/actor_connections.db > /app/data/build_connections.log 2>&1

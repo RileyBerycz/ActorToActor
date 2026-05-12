@@ -167,16 +167,18 @@ class ActorDatabaseService:
                     tmdb_popularity, movie_credits, tv_credits
                 )
                 
-                # Filter credits to significant ones only
-                significant_movies = [
+                # Filter credits to significant ones, sorted by popularity
+                filtered_movies = [
                     m for m in movie_credits 
                     if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
-                ][:20]  # Top 20
+                ]
+                significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
                 
-                significant_tv = [
+                filtered_tv = [
                     t for t in tv_credits 
                     if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
-                ][:20]  # Top 20
+                ]
+                significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
                 
                 # Insert/update actor
                 cursor.execute('''
@@ -236,6 +238,83 @@ class ActorDatabaseService:
                 "pages_processed": max_pages
             }, f)
     
+    def reindex_credits(self):
+        """Re-fetch credits for all existing actors (preserves actor list, refreshes movie/TV credits)"""
+        import time as _time
+        
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, name FROM actors')
+        actors = cursor.fetchall()
+        total = len(actors)
+        print(f"Reindexing credits for {total} actors...")
+        
+        processed = 0
+        for actor_id, name in actors:
+            # Re-fetch credits from TMDB
+            movies = self.make_api_request(
+                f"{BASE_URL}/person/{actor_id}/movie_credits",
+                {"api_key": self.api_key}
+            )
+            movie_credits = movies.get('cast', []) if movies else []
+            
+            tv_shows = self.make_api_request(
+                f"{BASE_URL}/person/{actor_id}/tv_credits",
+                {"api_key": self.api_key}
+            )
+            tv_credits = tv_shows.get('cast', []) if tv_shows else []
+            
+            # Apply new filtering (50 cap, sorted by popularity)
+            filtered_movies = [
+                m for m in movie_credits
+                if m.get('popularity', 0) > 1.0 and m.get('character', '').lower() != 'self'
+            ]
+            significant_movies = sorted(filtered_movies, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+            
+            filtered_tv = [
+                t for t in tv_credits
+                if t.get('popularity', 0) > 1.0 and t.get('character', '').lower() != 'self'
+            ]
+            significant_tv = sorted(filtered_tv, key=lambda x: x.get('popularity', 0), reverse=True)[:50]
+            
+            # Clear old credits
+            cursor.execute('DELETE FROM movie_credits WHERE actor_id = ?', (actor_id,))
+            cursor.execute('DELETE FROM tv_credits WHERE actor_id = ?', (actor_id,))
+            
+            # Insert new credits
+            for movie in significant_movies:
+                cursor.execute('''
+                INSERT OR REPLACE INTO movie_credits
+                (id, actor_id, title, character, popularity, release_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    movie['id'], actor_id, movie.get('title', ''),
+                    movie.get('character', ''), movie.get('popularity', 0),
+                    movie.get('release_date', '')
+                ))
+            
+            for tv in significant_tv:
+                cursor.execute('''
+                INSERT OR REPLACE INTO tv_credits
+                (id, actor_id, name, character, popularity, first_air_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    tv['id'], actor_id, tv.get('name', ''),
+                    tv.get('character', ''), tv.get('popularity', 0),
+                    tv.get('first_air_date', '')
+                ))
+            
+            processed += 1
+            if processed % 100 == 0:
+                conn.commit()
+                print(f"  Reindexed {processed}/{total} actors")
+            
+            _time.sleep(0.1)
+        
+        conn.commit()
+        conn.close()
+        print(f"Reindex complete! {processed} actors updated")
+    
     def get_database_stats(self):
         """Get current database statistics"""
         conn = sqlite3.connect(DATABASE_PATH)
@@ -270,11 +349,13 @@ def main():
         if sys.argv[1] == "update":
             max_pages = int(sys.argv[2]) if len(sys.argv) > 2 else 10
             service.update_actor_data(max_pages)
+        elif sys.argv[1] == "reindex":
+            service.reindex_credits()
         elif sys.argv[1] == "stats":
             stats = service.get_database_stats()
             print(json.dumps(stats, indent=2))
     else:
-        print("Usage: python actor_service.py [update|stats] [max_pages]")
+        print("Usage: python actor_service.py [update|stats|reindex] [max_pages]")
 
 if __name__ == "__main__":
     main()

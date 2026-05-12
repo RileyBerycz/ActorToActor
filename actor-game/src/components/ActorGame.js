@@ -76,14 +76,19 @@ function ActorGame({ settings, onReset }) {
     }
   }, [settings, apiCall]);
 
-  const searchActors = useCallback(async (query) => {
+  const searchActors = useCallback(async (query, movieId) => {
     if (!query || query.length < 2) {
       setSearchResults([]);
       return;
     }
     try {
-      const results = await apiCall(`search?q=${encodeURIComponent(query)}`);
-      setSearchResults(results.actors || []);
+      if (movieId) {
+        const results = await apiCall(`movies/${movieId}/cast?search=${encodeURIComponent(query)}`);
+        setSearchResults(results.cast || []);
+      } else {
+        const results = await apiCall(`search?q=${encodeURIComponent(query)}`);
+        setSearchResults(results.actors || []);
+      }
     } catch (error) {
       setSearchResults([]);
     }
@@ -185,11 +190,11 @@ function ActorGame({ settings, onReset }) {
   useEffect(() => {
     if (gameMode === 'selectActor') {
       const timeoutId = setTimeout(() => {
-        searchActors(searchQuery);
+        searchActors(searchQuery, selectedMovie?.id);
       }, 300);
       return () => clearTimeout(timeoutId);
     }
-  }, [searchQuery, gameMode, searchActors]);
+  }, [searchQuery, gameMode, searchActors, selectedMovie]);
 
   if (loading) {
     return (

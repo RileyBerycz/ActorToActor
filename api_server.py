@@ -74,7 +74,7 @@ def get_actors():
         # Build query
         if search:
             query = '''
-            SELECT id, name, popularity, profile_path, place_of_birth, credit_count
+            SELECT id, name, popularity, profile_path, place_of_birth, credits_count
             FROM actors 
             WHERE name LIKE ? 
             ORDER BY popularity DESC 
@@ -399,6 +399,44 @@ def get_shared_movies(actor1_id, actor2_id):
         conn.close()
         return jsonify({"movies": movies})
         
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/movies/<int:movie_id>/cast')
+def get_movie_cast(movie_id):
+    """Get cast of a specific movie, with optional name search"""
+    try:
+        search = request.args.get('search', '').strip()
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        query = '''
+        SELECT a.id, a.name, a.profile_path, a.popularity, mc.character
+        FROM movie_credits mc
+        JOIN actors a ON mc.actor_id = a.id
+        WHERE mc.id = ?
+        '''
+        params = [movie_id]
+        
+        if search:
+            query += ' AND a.name LIKE ?'
+            params.append(f'%{search}%')
+        
+        query += ' ORDER BY mc.popularity DESC LIMIT 20'
+        
+        cursor.execute(query, params)
+        cast = []
+        for row in cursor.fetchall():
+            cast.append({
+                "id": row[0],
+                "name": row[1],
+                "profile_path": row[2],
+                "popularity": row[3],
+                "character": row[4]
+            })
+        
+        conn.close()
+        return jsonify({"cast": cast})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
