@@ -9,6 +9,7 @@ import sqlite3
 import json
 import random
 import html
+import ipaddress
 from datetime import date, datetime
 from collections import deque
 from flask import Flask, jsonify, request, send_from_directory, Response
@@ -38,9 +39,13 @@ def init_daily_connections_table():
     conn.close()
 
 def is_local_request():
-    """Check if request comes from local network"""
+    """Check if request comes from local network (private IP or loopback)"""
     ip = request.remote_addr or ''
-    return ip in ('127.0.0.1', '::1', 'localhost') or ip.startswith(('192.168.', '10.', '172.16.'))
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback
+    except ValueError:
+        return ip in ('localhost',)
 
 # Initialize DB on import
 init_daily_connections_table()
@@ -338,6 +343,7 @@ button.danger:hover{background:#dc2626}
 
 <script>
 let selectedStart = null, selectedTarget = null, optimalPath = null;
+let startData = [], targetData = [];
 
 document.getElementById('dcDate').value = new Date().toISOString().split('T')[0];
 
@@ -345,74 +351,115 @@ function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-async function searchActors(inputId, resultsId, cb) {
+// Use event delegation for search results (avoids inline onclick escaping hell)
+document.getElementById('startResults').addEventListener('click', function(e) {
+  const div = e.target.closest('.search-item');
+  if (!div) return;
+  const id = parseInt(div.dataset.id);
+  const name = div.dataset.name;
+  selectedStart = id;
+  document.getElementById('startSearch').value = name;
+  this.innerHTML = '';
+  updatePreview();
+});
+document.getElementById('targetResults').addEventListener('click', function(e) {
+  const div = e.target.closest('.search-item');
+  if (!div) return;
+  const id = parseInt(div.dataset.id);
+  const name = div.dataset.name;
+  selectedTarget = id;
+  document.getElementById('targetSearch').value = name;
+  this.innerHTML = '';
+  updatePreview();
+});
+
+function updatePreview() {
+  const parts = [];
+  if (selectedStart) parts.push('Start ✓');
+  if (selectedTarget) parts.push('Target ✓');
+  document.getElementById('pathPreview').textContent = parts.length ? 'Selected: ' + parts.join(' ') + '. Click "Find Optimal Path".' : 'Select start and target actors, then click "Find Optimal Path"';
+}
+
+async function searchActors(inputId, resultsId, store) {
   const q = document.getElementById(inputId).value.trim();
-  if (q.length < 2) { document.getElementById(resultsId).innerHTML = ''; cb(null); return; }
-  const r = await fetch('/api/admin/actors/search?q=' + encodeURIComponent(q));
-  const data = await r.json();
   const results = document.getElementById(resultsId);
-  if (!data.actors || data.actors.length === 0) { results.innerHTML = '<div class="search-item">No results</div>'; return; }
-  results.innerHTML = data.actors.map(a =>
-    '<div class="search-item" onclick="selectActor(' + a.id + ',\\\'' + a.name.replace(/'/g,"\\\\'") + "','" + inputId + "','" + resultsId + "')\">" +
-    a.name + ' <span style="color:#94a3b8;font-size:0.85em">(pop: ' + a.popularity.toFixed(1) + ')</span></div>'
-  ).join('');
-  if (cb) cb(data.actors);
+  if (q.length < 2) { results.innerHTML = ''; return; }
+  try {
+    const r = await fetch('/api/admin/actors/search?q=' + encodeURIComponent(q));
+    const data = await r.json();
+    if (!data.actors || data.actors.length === 0) { results.innerHTML = '<div class="search-item">No results</div>'; return; }
+    store.length = 0;
+    data.actors.forEach(a => store.push(a));
+    results.innerHTML = data.actors.map(a =>
+      '<div class="search-item" data-id="' + a.id + '" data-name="' + a.name.replace(/"/g,'&quot;') + '">' +
+      a.name + ' <span style="color:#94a3b8;font-size:0.85em">(pop: ' + a.popularity.toFixed(1) + ')</span></div>'
+    ).join('');
+  } catch(e) {
+    results.innerHTML = '<div class="search-item" style="color:#ef4444">Error searching</div>';
+  }
 }
 
-document.getElementById('startSearch').addEventListener('input', debounce(() => searchActors('startSearch','startResults'), 300));
-document.getElementById('targetSearch').addEventListener('input', debounce(() => searchActors('targetSearch','targetResults'), 300));
-
-function selectActor(id, name, inputId, resultsId) {
-  document.getElementById(inputId).value = name;
-  document.getElementById(resultsId).innerHTML = '';
-  if (inputId === 'startSearch') selectedStart = id;
-  else selectedTarget = id;
-  document.getElementById('pathPreview').textContent = 'Selected: ' + (selectedStart ? 'Start ✓' : '') + ' ' + (selectedTarget ? 'Target ✓' : '') + '. Click "Find Optimal Path".';
-}
+document.getElementById('startSearch').addEventListener('input', debounce(() => searchActors('startSearch','startResults', startData), 300));
+document.getElementById('targetSearch').addEventListener('input', debounce(() => searchActors('targetSearch','targetResults', targetData), 300));
 
 async function findPath() {
   if (!selectedStart || !selectedTarget) { document.getElementById('pathPreview').textContent = 'Please select both start and target actors.'; return; }
-  document.getElementById('pathPreview').textContent = 'Finding optimal path...';
-  const r = await fetch('/api/admin/find-path?start=' + selectedStart + '&target=' + selectedTarget);
-  if (!r.ok) { document.getElementById('pathPreview').textContent = 'No path found between these actors.'; return; }
-  const data = await r.json();
-  optimalPath = data.path;
-  const html = optimalPath.map((item, i) => {
-    const name = item.name || item.title;
-    const color = item.type === 'actor' ? '#4ade80' : '#f59e0b';
-    return '<span style="color:' + color + '">' + name + '</span>' +
-      (i < optimalPath.length - 1 ? ' <span style="color:#94a3b8">→</span> ' : '');
-  }).join('');
-  document.getElementById('pathPreview').innerHTML = '<strong>Optimal Path (' + data.length + ' connections):</strong><br>' + html;
+  const el = document.getElementById('pathPreview');
+  el.textContent = 'Finding optimal path...';
+  try {
+    const r = await fetch('/api/admin/find-path?start=' + selectedStart + '&target=' + selectedTarget);
+    if (!r.ok) { el.textContent = 'No path found between these actors.'; return; }
+    const data = await r.json();
+    optimalPath = data.path;
+    const html = optimalPath.map((item, i) => {
+      const name = item.name || item.title;
+      const color = item.type === 'actor' ? '#4ade80' : '#f59e0b';
+      return '<span style="color:' + color + '">' + name + '</span>' +
+        (i < optimalPath.length - 1 ? ' <span style="color:#94a3b8">→</span> ' : '');
+    }).join('');
+    el.innerHTML = '<strong>Optimal Path (' + data.length + ' connections):</strong><br>' + html;
+  } catch(e) {
+    el.textContent = 'Error finding path.';
+  }
 }
 
 async function saveDaily() {
   if (!selectedStart || !selectedTarget) { alert('Select both actors first!'); return; }
   const date = document.getElementById('dcDate').value;
-  const r = await fetch('/api/admin/daily-connection', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({date, start_actor_id: selectedStart, target_actor_id: selectedTarget, optimal_path: optimalPath || []})
-  });
-  const data = await r.json();
-  if (data.success) { alert('Saved!'); loadConnections(); }
-  else alert('Error: ' + (data.error || 'unknown'));
+  try {
+    const r = await fetch('/api/admin/daily-connection', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date, start_actor_id: selectedStart, target_actor_id: selectedTarget, optimal_path: optimalPath || []})
+    });
+    const data = await r.json();
+    if (data.success) { alert('Saved!'); loadConnections(); }
+    else alert('Error: ' + (data.error || 'unknown'));
+  } catch(e) {
+    alert('Failed to save connection.');
+  }
 }
 
 async function loadConnections() {
-  const r = await fetch('/api/admin/daily-connections');
-  const data = await r.json();
   const list = document.getElementById('connectionList');
-  if (!data.connections || data.connections.length === 0) { list.innerHTML = '<li style="color:#94a3b8">No connections scheduled</li>'; return; }
-  list.innerHTML = data.connections.map(dc =>
-    '<li><span><strong>' + dc.date + '</strong> — actor ' + dc.start_actor_id + ' → ' + dc.target_actor_id + '</span>' +
-    '<button class="danger" onclick="deleteConnection(' + dc.id + ')" style="width:auto;padding:2px 10px;font-size:0.85em">X</button></li>'
-  ).join('');
+  try {
+    const r = await fetch('/api/admin/daily-connections');
+    const data = await r.json();
+    if (!data.connections || data.connections.length === 0) { list.innerHTML = '<li style="color:#94a3b8">No connections scheduled</li>'; return; }
+    list.innerHTML = data.connections.map(dc =>
+      '<li><span><strong>' + dc.date + '</strong> — actor ' + dc.start_actor_id + ' → ' + dc.target_actor_id + '</span>' +
+      '<button class="danger" onclick="deleteConnection(' + dc.id + ')" style="width:auto;padding:2px 10px;font-size:0.85em">X</button></li>'
+    ).join('');
+  } catch(e) {
+    list.innerHTML = '<li style="color:#ef4444">Error loading connections</li>';
+  }
 }
 
 async function deleteConnection(id) {
   if (!confirm('Delete this daily connection?')) return;
-  await fetch('/api/admin/daily-connection?id=' + id, {method: 'DELETE'});
+  try {
+    await fetch('/api/admin/daily-connection?id=' + id, {method: 'DELETE'});
+  } catch(e) {}
   loadConnections();
 }
 
