@@ -18,6 +18,7 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
   const [hint, setHint] = useState(null);
   const [optimalPath, setOptimalPath] = useState(null);
   const [showOptimalPath, setShowOptimalPath] = useState(false);
+  const [skipped, setSkipped] = useState(false);
   
   // UI state
   const [searchQuery, setSearchQuery] = useState('');
@@ -190,25 +191,37 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
     }
   }, [currentPath, targetActor, startActor, settings, apiCall]);
 
-  const getHint = useCallback(async () => {
+  const giveUp = useCallback(async () => {
     if (optimalPath) {
-      setHint('Check the solution to see the optimal path!');
+      setShowOptimalPath(true);
+      setSkipped(true);
+      setGameState('won');
       return;
     }
-    
     try {
       const result = await apiCall(`game/find-path?start_id=${startActor.id}&target_id=${targetActor.id}`);
       if (result.path) {
         setOptimalPath(result.path);
-        const conns = result.length || Math.floor((result.path.length - 1) / 2);
-        setHint(`Optimal path found: ${conns} connection${conns !== 1 ? 's' : ''}! Click "Show Solution" to see it.`);
+        setShowOptimalPath(true);
+      }
+    } catch (e) {}
+    setSkipped(true);
+    setGameState('won');
+  }, [startActor, targetActor, optimalPath, apiCall]);
+
+  const getHint = useCallback(async () => {
+    try {
+      const result = await apiCall(`game/find-path?start_id=${startActor.id}&target_id=${targetActor.id}`);
+      if (result.path) {
+        setOptimalPath(result.path);
+        setHint('Try looking for popular movies or actors with many connections!');
       } else {
         setHint('Try looking for popular movies or actors with many connections!');
       }
     } catch (error) {
       setHint('Try looking for popular movies or actors with many connections!');
     }
-  }, [startActor, targetActor, optimalPath, apiCall]);
+  }, [startActor, targetActor, apiCall]);
 
   const resetPath = useCallback(() => {
     setCurrentPath([startActor.id]);
@@ -421,20 +434,22 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
 
         {gameState === 'won' && (
           <div className="interaction-card victory-card">
-            <div className="victory-emoji">🎉</div>
-            <div className="victory-title">Connected!</div>
+            <div className="victory-emoji">{skipped ? '🏳️' : '🎉'}</div>
+            <div className="victory-title">{skipped ? 'Game Over' : 'Connected!'}</div>
             <div className="victory-detail">{startActor?.name} → {targetActor?.name}</div>
-            <div className="victory-path">{connectionCount} connection{connectionCount !== 1 ? 's' : ''}</div>
+            <div className="victory-path">
+              {skipped ? 'You gave up' : `${connectionCount} connection${connectionCount !== 1 ? 's' : ''}`}
+            </div>
           </div>
         )}
 
-        {/* Show Solution button */}
-        {optimalPath && optimalPath.length > 0 && (
+        {/* Show Solution button — only after game ends */}
+        {gameState === 'won' && optimalPath && optimalPath.length > 0 && (
           <button
             onClick={() => setShowOptimalPath(!showOptimalPath)}
             className="action-btn solution"
           >
-            {showOptimalPath ? 'Hide Solution' : 'Show Solution'}
+            {showOptimalPath ? 'Hide Solution' : 'Show Optimal Path'}
           </button>
         )}
 
@@ -456,6 +471,9 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
         {/* Action buttons */}
         <div className="action-row">
           <button onClick={getHint} className="action-btn hint">Hint</button>
+          {gameState === 'playing' && (
+            <button onClick={giveUp} className="action-btn skip">Give Up</button>
+          )}
           <button onClick={resetPath} className="action-btn reset">Reset</button>
           <button onClick={gameMode === 'daily' ? onReset : startNewGame} className="action-btn new">
             {gameMode === 'daily' ? 'Back Home' : 'New Game'}
