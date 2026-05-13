@@ -109,6 +109,19 @@
   white-space: nowrap;
 }
 
+.challenge-film {
+  font-size: 10px;
+  color: #818cf8;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.challenge-film .film-title {
+  font-style: italic;
+}
+
 .challenge-vs {
   display: flex;
   flex-direction: column;

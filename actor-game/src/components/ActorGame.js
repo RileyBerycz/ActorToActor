@@ -68,7 +68,29 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
         setCurrentPath([dailyConnection.start_actor.id]);
         setOptimalPath(dailyConnection.optimal_path || null);
         setGameState('playing');
-        setUiMode('selectMovie');
+        
+        // Auto-select start movie if specified
+        if (dailyConnection.start_movie) {
+          const sm = dailyConnection.start_movie;
+          setSelectedMovie(sm);
+          setPathMovies(prev => ({ ...prev, [sm.id]: sm.title }));
+          setCurrentPath([dailyConnection.start_actor.id, sm.id]);
+          setUiMode('selectActor');
+          setSearchQuery('');
+          // Check if target actor is in start movie (unlikely but possible)
+          try {
+            const hasResult = await apiCall(`movies/${sm.id}/has-actor/${dailyConnection.target_actor.id}`);
+            if (hasResult.has_actor) {
+              setPathActors(prev => ({ ...prev, [dailyConnection.target_actor.id]: dailyConnection.target_actor.name }));
+              setCurrentPath([dailyConnection.start_actor.id, sm.id, dailyConnection.target_actor.id]);
+              setCurrentActor(dailyConnection.target_actor);
+              setGameState('won');
+            }
+          } catch(e) {}
+          setAvailableMovies([]);
+        } else {
+          setUiMode('selectMovie');
+        }
         setLoading(false);
       } else {
         const gameData = await apiCall(`game/start?difficulty=${settings.difficulty}&exclude_mcu=${settings.excludeMCU || false}`);
@@ -122,15 +144,26 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
     setCurrentPath(newPath);
     setAvailableMovies([]);
     
-    // Check if target actor is in this movie -> auto-complete
-    try {
-      const result = await apiCall(`movies/${movie.id}/has-actor/${targetActor.id}`);
-      if (result.has_actor) {
-        setPathActors(prev => ({ ...prev, [targetActor.id]: targetActor.name }));
-        const fullPath = [...newPath, targetActor.id];
-        setCurrentPath(fullPath);
-        setCurrentActor(targetActor);
-        
+    // Check auto-complete: daily target movie match, or target actor in movie
+    const isDailyTarget = gameMode === 'daily' && dailyConnection?.target_movie?.id === movie.id;
+    let shouldAutoComplete = false;
+    
+    if (isDailyTarget) {
+      shouldAutoComplete = true;
+    } else {
+      try {
+        const result = await apiCall(`movies/${movie.id}/has-actor/${targetActor.id}`);
+        shouldAutoComplete = result.has_actor;
+      } catch (e) {}
+    }
+    
+    if (shouldAutoComplete) {
+      setPathActors(prev => ({ ...prev, [targetActor.id]: targetActor.name }));
+      const fullPath = [...newPath, targetActor.id];
+      setCurrentPath(fullPath);
+      setCurrentActor(targetActor);
+      
+      try {
         const validation = await apiCall('game/validate-path', {
           method: 'POST',
           body: JSON.stringify({
@@ -141,20 +174,17 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
             exclude_mcu: settings.excludeMCU
           })
         });
-        
         if (validation.valid) {
           setGameState('won');
           return;
         }
-      }
-    } catch (e) {
-      // Auto-complete check failed, fall through to normal actor search
+      } catch (e) {}
     }
     
     setUiMode('selectActor');
     setSearchQuery('');
     setSearchResults([]);
-  }, [currentPath, targetActor, startActor, settings, apiCall]);
+  }, [currentPath, targetActor, startActor, settings, apiCall, gameMode, dailyConnection]);
 
   const selectActor = useCallback(async (actor) => {
     const newPath = [...currentPath, actor.id];
@@ -292,6 +322,9 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
           <div className="challenge-actor">
             <img src={getImageUrl(startActor?.profile_path)} alt={startActor?.name} />
             <div className="challenge-name">{startActor?.name}</div>
+            {dailyConnection?.start_movie && (
+              <div className="challenge-film">in <span className="film-title">{dailyConnection.start_movie.title}</span></div>
+            )}
           </div>
           <div className="challenge-vs">
             <div className="vs-line"></div>
@@ -301,6 +334,9 @@ function ActorGame({ settings, onReset, gameMode, dailyConnection }) {
           <div className="challenge-actor target">
             <img src={getImageUrl(targetActor?.profile_path)} alt={targetActor?.name} />
             <div className="challenge-name">{targetActor?.name}</div>
+            {dailyConnection?.target_movie && (
+              <div className="challenge-film">in <span className="film-title">{dailyConnection.target_movie.title}</span></div>
+            )}
           </div>
         </div>
         <div className="challenge-meta">

@@ -31,10 +31,20 @@ def init_daily_connections_table():
         target_date DATE UNIQUE NOT NULL,
         start_actor_id INTEGER NOT NULL,
         target_actor_id INTEGER NOT NULL,
+        start_movie_id INTEGER,
+        start_movie_title TEXT,
+        target_movie_id INTEGER,
+        target_movie_title TEXT,
         optimal_path TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    # Migrate existing DBs: add movie columns if missing
+    for col in ('start_movie_id', 'start_movie_title', 'target_movie_id', 'target_movie_title'):
+        try:
+            c.execute(f'ALTER TABLE daily_connections ADD COLUMN {col} TEXT')
+        except:
+            pass
     conn.commit()
     conn.close()
 
@@ -97,14 +107,14 @@ def get_daily_connection():
         today = date.today().isoformat()
         conn = sqlite3.connect(DATABASE_PATH)
         c = conn.cursor()
-        c.execute('SELECT start_actor_id, target_actor_id, optimal_path FROM daily_connections WHERE target_date = ?', (today,))
+        c.execute('SELECT start_actor_id, target_actor_id, start_movie_id, start_movie_title, target_movie_id, target_movie_title, optimal_path FROM daily_connections WHERE target_date = ?', (today,))
         row = c.fetchone()
         conn.close()
         
         if not row:
             return jsonify({"available": False, "message": "No daily connection for today"}), 404
         
-        start_id, target_id, optimal_path_json = row
+        start_id, target_id, sm_id, sm_title, tm_id, tm_title, optimal_path_json = row
         
         # Get actor details
         conn = sqlite3.connect(DATABASE_PATH)
@@ -113,13 +123,18 @@ def get_daily_connection():
         actors_db = {r[0]: {"id": r[0], "name": r[1], "profile_path": r[2], "popularity": r[3]} for r in c.fetchall()}
         conn.close()
         
-        return jsonify({
+        result = {
             "available": True,
             "date": today,
             "start_actor": actors_db.get(start_id),
             "target_actor": actors_db.get(target_id),
             "optimal_path": json.loads(optimal_path_json) if optimal_path_json else None
-        })
+        }
+        if sm_id:
+            result["start_movie"] = {"id": sm_id, "title": sm_title}
+        if tm_id:
+            result["target_movie"] = {"id": tm_id, "title": tm_title}
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -151,12 +166,17 @@ def admin_daily_connection():
         target_date = data.get('date', date.today().isoformat())
         start_id = data['start_actor_id']
         target_id = data['target_actor_id']
+        sm_id = data.get('start_movie_id')
+        sm_title = data.get('start_movie_title')
+        tm_id = data.get('target_movie_id')
+        tm_title = data.get('target_movie_title')
         optimal_path = json.dumps(data.get('optimal_path', []))
         
         c.execute('''
-        INSERT OR REPLACE INTO daily_connections (target_date, start_actor_id, target_actor_id, optimal_path)
-        VALUES (?, ?, ?, ?)
-        ''', (target_date, start_id, target_id, optimal_path))
+        INSERT OR REPLACE INTO daily_connections 
+        (target_date, start_actor_id, target_actor_id, start_movie_id, start_movie_title, target_movie_id, target_movie_title, optimal_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (target_date, start_id, target_id, sm_id, sm_title, tm_id, tm_title, optimal_path))
         conn.commit()
         conn.close()
         return jsonify({"success": True, "date": target_date})
@@ -179,13 +199,18 @@ def admin_list_daily_connections():
     
     conn = sqlite3.connect(DATABASE_PATH)
     c = conn.cursor()
-    c.execute('SELECT id, target_date, start_actor_id, target_actor_id, created_at FROM daily_connections ORDER BY target_date DESC LIMIT 30')
+    c.execute('SELECT id, target_date, start_actor_id, target_actor_id, start_movie_id, start_movie_title, target_movie_id, target_movie_title, created_at FROM daily_connections ORDER BY target_date DESC LIMIT 30')
     rows = c.fetchall()
     conn.close()
     
     result = []
     for row in rows:
-        result.append({"id": row[0], "date": row[1], "start_actor_id": row[2], "target_actor_id": row[3], "created_at": row[4]})
+        entry = {"id": row[0], "date": row[1], "start_actor_id": row[2], "target_actor_id": row[3], "created_at": row[8]}
+        if row[4]:
+            entry["start_movie"] = {"id": row[4], "title": row[5]}
+        if row[6]:
+            entry["target_movie"] = {"id": row[6], "title": row[7]}
+        result.append(entry)
     return jsonify({"connections": result})
 
 @app.route('/api/admin/actors/search')
@@ -204,6 +229,18 @@ def admin_actor_search():
     actors = [{"id": r[0], "name": r[1], "popularity": r[2], "profile_path": r[3]} for r in c.fetchall()]
     conn.close()
     return jsonify({"actors": actors})
+
+@app.route('/api/admin/actors/<int:actor_id>/movies')
+def admin_actor_movies(actor_id):
+    """Admin: Get movies for an actor (local-only, for movie picker)"""
+    if not is_local_request():
+        return jsonify({"error": "Admin access restricted to local network"}), 403
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, title, character, popularity FROM movie_credits WHERE actor_id = ? ORDER BY popularity DESC LIMIT 20', (actor_id,))
+    movies = [{"id": r[0], "title": r[1], "character": r[2], "popularity": r[3]} for r in c.fetchall()]
+    conn.close()
+    return jsonify({"movies": movies})
 
 @app.route('/api/admin/find-path')
 def admin_find_path():
@@ -322,11 +359,23 @@ button.danger:hover{background:#dc2626}
       <label>Start Actor</label>
       <input type="text" id="startSearch" placeholder="Search actors..." autocomplete="off">
       <div class="search-results" id="startResults"></div>
+      <div id="startMoviePicker" style="display:none;margin-top:4px">
+        <label style="font-size:0.8em;color:#818cf8">Optional: Start Movie</label>
+        <select id="startMovieSelect" style="font-size:0.85em">
+          <option value="">-- No specific movie --</option>
+        </select>
+      </div>
     </div>
     <div>
       <label>Target Actor</label>
       <input type="text" id="targetSearch" placeholder="Search actors..." autocomplete="off">
       <div class="search-results" id="targetResults"></div>
+      <div id="targetMoviePicker" style="display:none;margin-top:4px">
+        <label style="font-size:0.8em;color:#818cf8">Optional: Target Movie</label>
+        <select id="targetMovieSelect" style="font-size:0.85em">
+          <option value="">-- No specific movie --</option>
+        </select>
+      </div>
     </div>
   </div>
   <div style="margin-top:8px">
@@ -344,6 +393,7 @@ button.danger:hover{background:#dc2626}
 <script>
 let selectedStart = null, selectedTarget = null, optimalPath = null;
 let startData = [], targetData = [];
+let selectedStartMovie = null, selectedTargetMovie = null;
 
 document.getElementById('dcDate').value = new Date().toISOString().split('T')[0];
 
@@ -351,15 +401,17 @@ function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-// Use event delegation for search results (avoids inline onclick escaping hell)
+// --- Actor selection ---
 document.getElementById('startResults').addEventListener('click', function(e) {
   const div = e.target.closest('.search-item');
   if (!div) return;
   const id = parseInt(div.dataset.id);
   const name = div.dataset.name;
   selectedStart = id;
+  selectedStartMovie = null;
   document.getElementById('startSearch').value = name;
   this.innerHTML = '';
+  loadActorMovies(id, 'startMoviePicker', 'startMovieSelect');
   updatePreview();
 });
 document.getElementById('targetResults').addEventListener('click', function(e) {
@@ -368,8 +420,10 @@ document.getElementById('targetResults').addEventListener('click', function(e) {
   const id = parseInt(div.dataset.id);
   const name = div.dataset.name;
   selectedTarget = id;
+  selectedTargetMovie = null;
   document.getElementById('targetSearch').value = name;
   this.innerHTML = '';
+  loadActorMovies(id, 'targetMoviePicker', 'targetMovieSelect');
   updatePreview();
 });
 
@@ -379,6 +433,39 @@ function updatePreview() {
   if (selectedTarget) parts.push('Target ✓');
   document.getElementById('pathPreview').textContent = parts.length ? 'Selected: ' + parts.join(' ') + '. Click "Find Optimal Path".' : 'Select start and target actors, then click "Find Optimal Path"';
 }
+
+async function loadActorMovies(actorId, pickerId, selectId) {
+  const picker = document.getElementById(pickerId);
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '<option value="">-- No specific movie --</option>';
+  sel.selectedIndex = 0;
+  picker.style.display = 'block';
+  try {
+    const r = await fetch('/api/admin/actors/' + actorId + '/movies');
+    const data = await r.json();
+    if (data.movies && data.movies.length > 0) {
+      data.movies.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.title = m.character ? 'as ' + m.character : '';
+        opt.textContent = m.title + (m.character ? ' (as ' + m.character + ')' : '');
+        sel.appendChild(opt);
+      });
+    }
+  } catch(e) {}
+}
+
+// --- Movie selection ---
+document.getElementById('startMovieSelect').addEventListener('change', function() {
+  const val = this.value;
+  const text = val ? this.options[this.selectedIndex].textContent.split(' (as')[0] : '';
+  selectedStartMovie = val ? {id: parseInt(val), title: text} : null;
+});
+document.getElementById('targetMovieSelect').addEventListener('change', function() {
+  const val = this.value;
+  const text = val ? this.options[this.selectedIndex].textContent.split(' (as')[0] : '';
+  selectedTargetMovie = val ? {id: parseInt(val), title: text} : null;
+});
 
 async function searchActors(inputId, resultsId, store) {
   const q = document.getElementById(inputId).value.trim();
@@ -426,11 +513,25 @@ async function findPath() {
 async function saveDaily() {
   if (!selectedStart || !selectedTarget) { alert('Select both actors first!'); return; }
   const date = document.getElementById('dcDate').value;
+  const body = {
+    date,
+    start_actor_id: selectedStart,
+    target_actor_id: selectedTarget,
+    optimal_path: optimalPath || []
+  };
+  if (selectedStartMovie) {
+    body.start_movie_id = selectedStartMovie.id;
+    body.start_movie_title = selectedStartMovie.title;
+  }
+  if (selectedTargetMovie) {
+    body.target_movie_id = selectedTargetMovie.id;
+    body.target_movie_title = selectedTargetMovie.title;
+  }
   try {
     const r = await fetch('/api/admin/daily-connection', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({date, start_actor_id: selectedStart, target_actor_id: selectedTarget, optimal_path: optimalPath || []})
+      body: JSON.stringify(body)
     });
     const data = await r.json();
     if (data.success) { alert('Saved!'); loadConnections(); }
@@ -446,10 +547,17 @@ async function loadConnections() {
     const r = await fetch('/api/admin/daily-connections');
     const data = await r.json();
     if (!data.connections || data.connections.length === 0) { list.innerHTML = '<li style="color:#94a3b8">No connections scheduled</li>'; return; }
-    list.innerHTML = data.connections.map(dc =>
-      '<li><span><strong>' + dc.date + '</strong> — actor ' + dc.start_actor_id + ' → ' + dc.target_actor_id + '</span>' +
-      '<button class="danger" onclick="deleteConnection(' + dc.id + ')" style="width:auto;padding:2px 10px;font-size:0.85em">X</button></li>'
-    ).join('');
+    list.innerHTML = data.connections.map(dc => {
+      let label = dc.date;
+      if (dc.start_movie) label += ' | ' + dc.start_movie.title;
+      label += ' — ' + dc.start_actor_id + ' → ' + dc.target_actor_id;
+      if (dc.target_movie) label += ' | ' + dc.target_movie.title;
+      return '<li><span><strong>' + dc.date + '</strong> ' +
+        (dc.start_movie ? '<span style="color:#818cf8;font-size:0.85em">' + dc.start_movie.title + '</span> ' : '') +
+        '— ' + dc.start_actor_id + ' → ' + dc.target_actor_id +
+        (dc.target_movie ? ' <span style="color:#818cf8;font-size:0.85em">' + dc.target_movie.title + '</span>' : '') +
+        '</span><button class="danger" onclick="deleteConnection(' + dc.id + ')" style="width:auto;padding:2px 10px;font-size:0.85em">X</button></li>';
+    }).join('');
   } catch(e) {
     list.innerHTML = '<li style="color:#ef4444">Error loading connections</li>';
   }
