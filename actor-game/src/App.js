@@ -68,7 +68,7 @@ function App() {
         ) : (
           <div className="daily-pair">
             <p style={{ color: '#94a3b8', fontSize: '0.95em' }}>
-              {dailyLoading ? 'Checking for today's puzzle...' : 'No daily puzzle set yet! Play random games instead.'}
+              {dailyLoading ? "Checking for today's puzzle..." : 'No daily puzzle set yet! Play random games instead.'}
             </p>
           </div>
         )}
